@@ -69,6 +69,9 @@ const HOOK_OVERRIDES = [];
  */
 const UNIVERSAL_PATCHES = [];
 
+/** 已经就「上游实现变了」警告过的 `<actionId>.<hook>`，避免每次数据准备刷屏 */
+const warnedGuards = new Set();
+
 /* -------------------------------------------- */
 /*  P1：副手打击 + N8 徒手手位                     */
 /* -------------------------------------------- */
@@ -82,8 +85,8 @@ const UNIVERSAL_PATCHES = [];
  *  ① `e.weapon` 是 `CrucibleItem#snapshot()`（:7753）的产物，取的是 **_source**。
  *    而「这件武器现在握在哪只手」对 slot 为 EITHER 的武器只存在于**派生值**里：
  *    schema `slot` 的 `initial: 0`（:44989）+ `_prepareWeapons`（:41550/:41555）只改派生不回写 _source。
- *    实测 `ember.crucible-adventure` 里有 **85 件已装备、非天生、_source.slot=0 的武器**，
- *    分布在 61 个 actor 上（其中 11 个带 Dual Wield）—— 复现用例：Juro Wandren 的双匕首。
+ *    实测 `ember.crucible-adventure` 里有 **161 件已装备、非天生、_source.slot=0 的武器**，
+ *    分布在 111 个 actor 上（其中 9 个带 Dual Wield）—— 复现用例：Juro Wandren 的双匕首。
  *  ② 只看 `find()` 的**第一个** strike 事件；双持/多次打击时第一次可能不是主手那一击。
  *
  * 修法：拿事件里的武器 id 回查角色身上那件武器的**派生** slot；查不到再退回快照值；
@@ -93,6 +96,10 @@ const UNIVERSAL_PATCHES = [];
  * 见下。两者是互补的：这里放宽判据，那里补上缺失的手位。
  */
 ACTION_PATCHES.offhandStrike = {
+  // 本补丁**整体顶掉**上游的 canUse（`Object.assign` 是按名覆盖）。上游哪天自己修好了，
+  // 我们会带着旧逻辑继续跑，既不报警也不退让 —— 那不是双重应用，是**静默替换**。
+  // 所以给它一道与 HOOK_OVERRIDES.guard 同款的特征串闸门：看不到就整键退让。
+  __guard: ["MustFollowMainhandStrike", "SLOTS.MAINHAND"],
   canUse() {
     const actor = this.actor;
     const fail = () => {
@@ -406,7 +413,14 @@ const turnsDurationPatch = {
       const d = effect?.duration;
       if ( !d || (d.units !== "turns") ) continue;
       d.units = "rounds";
-      d.expiry ??= "turnStart";
+      // expiry 用 turnEnd 而不是 turnStart —— 依据是上游自己迁移同一种数据时的映射：
+      // commit 48bf4391f7（PR #695「Migrate ActiveEffect expiry to V14 native schema」）
+      // 把自家 _source 里旧的 `{turns:N, rounds:null}` 全部迁成
+      // `{value:N, units:"rounds", expiry:"turnEnd"}` —— 实测 49/49，零例外。
+      // （turnStart 是上游给 `{rounds:N}` 那种数据的映射，套到 turns 数据上会多撑约两个 turn。）
+      // 注意：N3 的 sentinelKick 保持 turnStart，它的数据不是 turns 型，
+      // 最近的权威是 crucible 自家的 SYSTEM.EFFECTS.staggered 生成器（:5740），产出就是 turnStart。
+      d.expiry ??= "turnEnd";
     }
   }
 };
@@ -706,8 +720,26 @@ function installActionHookPatch() {
     const extra = ACTION_PATCHES[this.id];
     if ( extra ) {
       const own = this.hooks;
+      // 逐键过滤：只有「要顶掉上游同名钩子」的键才受 __guard 约束。
+      // 上游没有同名钩子的键（纯追加，如 bewilderingGaze.initialize）一律放行。
+      const merged = {};
+      for ( const [k, v] of Object.entries(extra) ) {
+        if ( k === "__guard" ) continue;                        // 必须剥掉，否则会被当成钩子调用
+        if ( extra.__guard && (own[k] instanceof Function) ) {
+          const src = String(own[k]);
+          if ( ![].concat(extra.__guard).every(g => src.includes(g)) ) {
+            const key = `${this.id}.${k}`;
+            if ( !warnedGuards.has(key) ) {
+              warnedGuards.add(key);
+              warn(`${key}：上游实现已变，本补丁自动退让`);
+            }
+            continue;
+          }
+        }
+        merged[k] = v;
+      }
       for ( const test of original.call(this) ) {
-        if ( test === own ) yield Object.assign({}, own, extra);
+        if ( test === own ) yield Object.assign({}, own, merged);
         else yield test;
       }
     }

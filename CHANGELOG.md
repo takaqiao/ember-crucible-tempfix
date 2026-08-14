@@ -2,6 +2,43 @@
 
 本文件记录对玩家可见的行为变化。行号级的取证过程在 `docs/上游缺陷诊断.md`。
 
+## 0.2.2
+
+### ⚠ 订正 v0.2.1：N10 的 `expiry` 方向写反了
+
+`turnStart` → **`turnEnd`**。依据是上游自己迁移**同一种数据**时的映射：
+commit `48bf4391f7`（PR #695「Migrate ActiveEffect expiry to V14 native schema」）
+把自家 `_source` 里旧的 `{turns:N, rounds:null}` 全部迁成
+`{value:N, units:"rounds", expiry:"turnEnd"}` —— 实测 **49/49，零例外**。
+
+`turnStart` 是上游给 `{rounds:N}` 那种数据的映射，套到 turns 数据上会让九大血统的变身
+**多撑约两个 turn**。
+
+**N3（排斥踢）保持 `turnStart` 不变** —— 它的数据不是 turns 型，
+最近的权威是 crucible 自家的 `SYSTEM.EFFECTS.staggered` 生成器，产出就是 turnStart。
+
+### 新增：P1 的上游退让闸门
+
+P1 是唯一「整体顶掉上游实现却没有闸门」的补丁。今天无害（上游 `canUse` 一字未改），
+但上游哪天自己修好，我们会带着旧逻辑继续跑 —— 那不是双重应用，是**静默替换**。
+
+现在 `ACTION_PATCHES` 支持 `__guard`：列出上游实现里必须还能看到的特征串，
+看不到就**逐键退让**并警告一次。纯追加的键（上游没有同名钩子）不受约束。
+
+### 订正统计数字
+
+`_source.slot = 0` 的武器实测数，由「85 件 / 61 个 actor / 其中 11 个带 Dual Wield」
+订正为 **161 件 / 111 个 actor / 其中 9 个带 Dual Wield**。
+范围：`ember.crucible-adventure` 的 265 个 actor；过滤条件为 equipped 且 category 非 natural/unarmed；
+含场景 token delta 结果不变。原数字三项全错，是引用了未经复核的结果。
+
+> 顺带核实：受 N10 影响的动作数**仍是 19 个 / 20 处**（全 10 个 ember pack 都扫过，
+> 其余 8 个 pack 零命中）。上游对账里「32 个 / 92 处」那个说法未能复现。
+
+### 测试
+
+94 → **97 条断言**；变异测试 17 → **19 处，19/19 全部被抓住**。
+
 ## 0.2.1
 
 ### 新增 N10 —— 目前影响面最大的一条

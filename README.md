@@ -42,7 +42,7 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | **N6** | 「反重力石」纯自身效果却必须选别人才能用 | ember |
 | **N7** | 「暗焰头冠」用一次崩在出卡之前，资源不扣、卡不出 | ember |
 
-> **状态**：全部 12 条只有静态取证 + 94 条离线断言（另有 17/17 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
+> **状态**：全部 12 条只有静态取证 + 97 条离线断言（另有 17/17 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
 > 详见 `HANDOFF.md` §3 的验证表。
 
 ---
@@ -60,8 +60,8 @@ lastAction.events.find(e => e.type === "strike")?.weapon.system.slot !== SYSTEM.
 `e.weapon` 是 `snapshot()`（`:7753`）的产物，取的是 **`_source`**。而「这件武器现在握在哪只手」
 对 slot 为 `EITHER(0)` 的武器只存在于**派生值**里：schema 的 `initial: 0`（`:44989`）+
 `_prepareWeapons`（`:41550`/`:41555`）只改派生不回写 `_source`。
-实测 `ember.crucible-adventure` 里有 **85 件已装备、非天生、`_source.slot = 0` 的武器**，
-分布在 61 个 actor 上（其中 11 个带 Dual Wield）。
+实测 `ember.crucible-adventure` 里有 **161 件已装备、非天生、`_source.slot = 0` 的武器**，
+分布在 111 个 actor 上（其中 9 个带 Dual Wield）。
 
 更主的一条是**徒手**：`UNARMED_DATA`（`:6681`）里根本没有 slot 字段，
 `_prepareWeapons` 的徒手赋值（`:41562`/`:41565`）**一个字都不设 slot**，

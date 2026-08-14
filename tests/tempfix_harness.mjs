@@ -325,6 +325,30 @@ console.log("\nP1 副手打击");
   check("没有已确认动作 → 拦住且不抛 TypeError", e !== null && !(e instanceof TypeError), e?.name);
 }
 
+console.log("\nP1 的上游 guard（上游改好后必须自动退让）");
+{
+  const mh = { id: "w1", system: { slot: SLOTS.MAINHAND } };
+  const actor = new CrucibleActor("P1guard", [mh], { mainhand: mh, offhand: mh });
+  actor.itemList = { get: () => mh, [Symbol.iterator]: function* () { yield mh; } };
+  actor.lastConfirmedAction = { events: [{ type: "move" }] };   // 会让我们的 canUse 拦住
+
+  // 上游原实现还在（含两个特征串）→ 补丁照常顶掉它
+  HOOKS_ACTION.offhandStrike = Object.freeze({
+    canUse() { this.upstreamRan = true; /* MustFollowMainhandStrike + SLOTS.MAINHAND */ }
+  });
+  const a = new CrucibleAction({ id: "offhandStrike" }, { actor });
+  check("特征串齐全 → 补丁生效（仍然拦住）", throws(() => a.canUse()) !== null);
+  check("上游实现被顶掉了", !a.upstreamRan);
+
+  // 模拟上游重写：特征串消失 → 补丁必须整键退让，改由上游自己把关
+  HOOKS_ACTION.offhandStrike = Object.freeze({ canUse() { this.upstreamRan = true; } });
+  const b = new CrucibleAction({ id: "offhandStrike" }, { actor });
+  b.canUse();
+  check("上游改写后补丁退让、不再拦截", b.upstreamRan === true);
+
+  delete HOOKS_ACTION.offhandStrike;
+}
+
 console.log("\nN8 徒手 / 临时武器的手位");
 {
   updateSourceCalls = 0;
@@ -586,7 +610,7 @@ console.log("\nN10 units:\"turns\" 的效果永远不会被创建");
   raw.preActivate();
   check("units 由 turns 改成 rounds", raw.effects[0].duration.units === "rounds", raw.effects[0].duration.units);
   check("value 保持不变", raw.effects[0].duration.value === 6, String(raw.effects[0].duration.value));
-  check("补上 expiry=turnStart", raw.effects[0].duration.expiry === "turnStart");
+  check("补上 expiry=turnEnd（依据上游 PR #695 的 49/49 映射）", raw.effects[0].duration.expiry === "turnEnd", raw.effects[0].duration.expiry);
   check("修完之后系统不再拒绝创建", preCreateWouldReject(raw.effects[0]) === false);
 
   // {turns:1, rounds:null} 这种混写（ember 敌手侧的写法）同样要救回来
