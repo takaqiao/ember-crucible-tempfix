@@ -146,6 +146,30 @@ const HOOKS_ACTION = {
   })
 };
 
+/**
+ * 复刻核心 `ActiveEffect.#migrateDuration`（foundry.mjs:15931）：
+ * 按 seconds → turns → rounds 顺序找第一个**数字**属性，补出 `{value, units}` 后 break。
+ * `CrucibleAction.migrateData`（:21573）对每条 effect 都会调一次，所以活对象上看到的是迁移后的形态。
+ */
+const migrateDuration = d => {
+  if (!d || typeof d !== "object") return d;
+  for (const unit of ["seconds", "turns", "rounds"]) {
+    if (Object.hasOwn(d, unit) && (typeof d[unit] === "number")) {
+      if (!Object.hasOwn(d, "value")) d.value = d[unit];
+      if (!Object.hasOwn(d, "units")) d.units = unit;
+      break;
+    }
+  }
+  return d;
+};
+
+/**
+ * 复刻 `CrucibleActiveEffect._preCreate`（crucible-compiled.mjs:39581）里那道硬拦截：
+ * units 是 months / turns 时 `return false` —— **效果压根不会被创建**。
+ * @returns {boolean} 这个效果会不会被系统拒绝
+ */
+const preCreateWouldReject = effect => ["months", "turns"].includes(effect?.duration?.units);
+
 class CrucibleAction {
   constructor(src, ctx = {}) {
     this.id = src.id;
@@ -155,6 +179,7 @@ class CrucibleAction {
     this.tags = new TagSet(src.tags ?? []);
     this.usage = { hasDice: false, restoration: false, resource: null, defenseType: null, bonuses: { ability: 0, damageBonus: 0 } };
     this.effects = foundry.utils.deepClone(src.effects ?? []);
+    for (const e of this.effects) if (e.duration) migrateDuration(e.duration);   // :21573
     this.hooks = HOOKS_ACTION[src.id] ?? Object.freeze({});   // :19023
     this.actor = ctx.actor ?? null;
     this.item = ctx.item ?? null;
@@ -232,7 +257,20 @@ class CrucibleActor {
     this.callActorHooks("prepareActions", this.system.actions);
   }
 }
-globalThis.CONFIG = { Actor: { documentClass: CrucibleActor } };
+/**
+ * `CrucibleActiveEffect._preCreate`（:39581）的桩件 —— N10 的 guard 会读它的**源码**
+ * 来判断上游是否仍然拒绝 turns。所以这里必须是一个源码里真的含 "turns" 字面量的函数。
+ */
+class CrucibleActiveEffect {
+  _preCreate() {
+    if ( ["months", "turns"].includes(this.duration.units) ) return false;
+  }
+}
+
+globalThis.CONFIG = {
+  Actor: { documentClass: CrucibleActor },
+  ActiveEffect: { documentClass: CrucibleActiveEffect }
+};
 globalThis.crucible = {
   api: {
     models: { CrucibleAction },
@@ -536,6 +574,81 @@ console.log("\nP3 / N9 符文小戏法与训练等级");
   check("life（Healer）不在表里 → 不注入、不改训练", !healer.system.actions.fontOfLife && healer.system.training.life === undefined);
 }
 
+console.log("\nN10 units:\"turns\" 的效果永远不会被创建");
+{
+  const actor = new CrucibleActor("N10");
+
+  // 迁移链：数据里的 {turns:6} → 活对象上的 {value:6, units:"turns"} → 被 _preCreate 拒绝
+  const raw = new CrucibleAction({ id: "tyraphicTransformation", effects: [{ name: "变身", system: {}, duration: { turns: 6 } }] }, { actor });
+  check("迁移把 {turns:6} 变成 {value:6, units:'turns'}", raw.effects[0].duration.value === 6 && raw.effects[0].duration.units === "turns",
+    JSON.stringify(raw.effects[0].duration));
+
+  raw.preActivate();
+  check("units 由 turns 改成 rounds", raw.effects[0].duration.units === "rounds", raw.effects[0].duration.units);
+  check("value 保持不变", raw.effects[0].duration.value === 6, String(raw.effects[0].duration.value));
+  check("补上 expiry=turnStart", raw.effects[0].duration.expiry === "turnStart");
+  check("修完之后系统不再拒绝创建", preCreateWouldReject(raw.effects[0]) === false);
+
+  // {turns:1, rounds:null} 这种混写（ember 敌手侧的写法）同样要救回来
+  const mixed = new CrucibleAction({ id: "abyssalWhispers", effects: [{ name: "低语", duration: { turns: 3, rounds: null } }] }, { actor });
+  mixed.preActivate();
+  check("{turns:N, rounds:null} 混写同样被修好", mixed.effects[0].duration.units === "rounds" && mixed.effects[0].duration.value === 3,
+    JSON.stringify(mixed.effects[0].duration));
+
+  // 多条 effects 全都要处理
+  const multi = new CrucibleAction({ id: "someAction", effects: [{ duration: { turns: 1 } }, { duration: { turns: 2 } }] }, { actor });
+  multi.preActivate();
+  check("多条 effects 全部处理", multi.effects.every(e => e.duration.units === "rounds"));
+
+  // 反向：本来就合法的不动
+  const fine = new CrucibleAction({ id: "someAction", effects: [{ duration: { value: 1, units: "rounds", expiry: "turnEnd" } }] }, { actor });
+  fine.preActivate();
+  check("已经合法的 rounds → 原样不动", fine.effects[0].duration.expiry === "turnEnd" && fine.effects[0].duration.value === 1);
+
+  // 反向：没有 effects / 没有 duration 不抛错
+  check("没有 effects 不抛错", throws(() => new CrucibleAction({ id: "someAction" }, { actor }).preActivate()) === null);
+  check("effect 没有 duration 不抛错", throws(() => new CrucibleAction({ id: "someAction", effects: [{ name: "x" }] }, { actor }).preActivate()) === null);
+
+  // **最关键的反向断言**：通用补丁是额外 yield 一格，不能把按 id 的补丁或 ember 的钩子顶掉
+  const kick = new CrucibleAction({ id: "sentinelKick", effects: [{ duration: { value: 1, units: "", expiry: null } }] }, { actor });
+  kick.preActivate();
+  check("不影响 N3：sentinelKick 仍被补成 rounds", kick.effects[0].duration.units === "rounds");
+  check("不影响 ember：sentinelKick 的 postActivate 仍在", kick.hooks.postActivate === HOOKS_ACTION.sentinelKick.postActivate);
+
+  const abyss = new CrucibleActor("N10b");
+  const victim = new CrucibleActor("N10victim");
+  const mark = new CrucibleAction({ id: "abyssMarkUnmaking", effects: [{ name: "印记", duration: { turns: 3 } }] }, { actor: abyss });
+  mark.targets.set("t", { actor: victim });
+  mark.preActivate();
+  check("不影响 N1：效果 ID 仍被改成 16 字符", /^[a-zA-Z0-9]{16}$/.test(mark.effects[0]._id), mark.effects[0]._id);
+  check("同时 duration 也被修好", mark.effects[0].duration.units === "rounds");
+
+  // N2 不再空转：changes 与 duration 两件事都做到了，效果才真的会被创建
+  const shield = new CrucibleAction({ id: "sentinelShielding", effects: [{ name: "守护", system: {}, duration: { turns: 1, rounds: null } }] }, { actor });
+  shield.preActivate();
+  check("N2 不再空转：changes 写对了层级", shield.effects[0].system.changes?.[0]?.key === "system.defenses.armor.bonus");
+  check("N2 不再空转：效果这次真的会被创建", preCreateWouldReject(shield.effects[0]) === false);
+}
+
+console.log("\nN10 的上游 guard（上游放宽后必须自动停用）");
+{
+  const actor = new CrucibleActor("N10guard");
+  const realPreCreate = CONFIG.ActiveEffect.documentClass.prototype._preCreate;
+  // 模拟上游放宽：_preCreate 源码里不再有 "turns" 字面量
+  CONFIG.ActiveEffect.documentClass.prototype._preCreate = function () { return undefined; };
+  globalThis.emberCrucibleTempFix.resetTurnsGuard();
+
+  const a = new CrucibleAction({ id: "tyraphicTransformation", effects: [{ duration: { turns: 6 } }] }, { actor });
+  a.preActivate();
+  check("上游放宽后不再改写时长（不擅自改数值语义）", a.effects[0].duration.units === "turns", a.effects[0].duration.units);
+
+  CONFIG.ActiveEffect.documentClass.prototype._preCreate = realPreCreate;
+  globalThis.emberCrucibleTempFix.resetTurnsGuard();
+  const b = new CrucibleAction({ id: "tyraphicTransformation", effects: [{ duration: { turns: 6 } }] }, { actor });
+  b.preActivate();
+  check("拦截还在时照常改写", b.effects[0].duration.units === "rounds");
+}
+
 console.log("\nT1 角色卡刷新");
 {
   renderCount = 0;
@@ -561,6 +674,16 @@ console.log("\n开关");
     a.prepare();
     const untouched = (a.range.minimum === 2) && (a.range.maximum === 2);
     setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+    return untouched;
+  })());
+
+  check("通用补丁默认在册", globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length === 1);
+  check("关掉 N10 → 时长不再被改写", (() => {
+    setSetting("ember-crucible-tempfix.patchTurnsDuration", false);
+    const a = new CrucibleAction({ id: "tyraphicTransformation", effects: [{ system: {}, duration: { turns: 6 } }] }, {});
+    a.preActivate();
+    const untouched = a.effects[0].duration.units === "turns";
+    setSetting("ember-crucible-tempfix.patchTurnsDuration", true);
     return untouched;
   })());
 

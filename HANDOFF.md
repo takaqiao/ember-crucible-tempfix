@@ -33,7 +33,8 @@
 | **P3** 符文小戏法 + N9 | 血统/召唤物给了符文却没给对应动作；旧快照还丢了训练等级（−4） | 两侧数据缺口 |
 | **P4** `mayisRestorativeRedirection` | 「疗愈导流」恢复的资源种类恒为生命值 | ember 读了不存在的字段 |
 | **N1** `abyssMarkUnmaking` | 「湮灭之印」点了什么都不发生，连聊天卡都不生成 | 效果 id 只有 15 字符 |
-| **N2** `sentinelShielding` / `tyraphicTransformation` | 图标挂上但加值一条不生效 | `changes` 写在了 effect 顶层 |
+| **N10** 通用补丁 | **卡上写着「获得效果·∞」，人身上什么都没有**；九个血统的招牌变身全部中招 | 数据写 `{turns:N}`，而 `_preCreate` 拒绝 turns 单位 |
+| **N2** `sentinelShielding` / `tyraphicTransformation` | 加值一条不生效（**需与 N10 同开**，否则效果压根不会被创建） | `changes` 写在了 effect 顶层 |
 | **N3** `sentinelKick` | 「排斥踢」的踉跄**永不消失**，每回合 −2 行动点 | duration 有 value 没 units |
 | **N4** `heartSparkOfEmber` | 「余烬之火」复活友方的分支永远选不中目标 | scope 写成了 ENEMIES |
 | **N5** `bewilderingGaze` | 精神攻击按护甲结算，会被「用盾牌挡下」 | 缺 willpower 标签 |
@@ -50,7 +51,7 @@
 ```
 C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── module.json
-├── scripts\tempfix.mjs        ← 全部逻辑（约 640 行，注释密；顶部有四条共用前提）
+├── scripts\tempfix.mjs        ← 全部逻辑（约 990 行，注释密；顶部有四条共用前提）
 ├── README.md                  ← 面向使用者：每个补丁的根因与做法
 ├── HANDOFF.md                 ← 本文件
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 撤回记录、§6 已排除清单
@@ -71,10 +72,10 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**74 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**74 passed / 0 failed**。
+**94 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**94 passed / 0 failed**。
 
-桩件本身也验过 —— 变异测试把 13 处补丁逐个改回坏写法，**13/13 全部被抓住**。
+桩件本身也验过 —— 变异测试把 17 处补丁逐个改回坏写法，**17/17 全部被抓住**。
 （脚本没有入库，重跑的话照 §5 的写法现写一个即可：备份 → 字符串替换 → 跑 harness → finally 还原。）
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。
@@ -96,7 +97,8 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 | N9 | 召唤一只火精怪 | 有「点燃 Enkindle」；`diagnose()` 里 `training.flame === 1` |
 | P4 | 被一个**打士气**的法术抵抗后用疗愈导流 | 恢复的是士气不是生命值；`tags` 里**没有** generic、**仍有** harmless；`hasDice` 为 false |
 | N1 | 暴击后用「湮灭之印」 | 正常出卡、扣资源；`diagnose().patches.hookOverrides` 显示已覆盖 |
-| N2 | 用「强化护盾」 | 护甲防御 +3 真的涨了 |
+| **N10** | 用任一血统的招牌变身（如 Altyra 雷法姆变身） | **角色身上真的出现效果图标**、且过 N 轮后消失；`diagnose().patches.universal` 含 turnsDuration |
+| N2 | 用「强化护盾」 | 先确认图标出现了（N10 生效），再看护甲防御 +3 真的涨了 |
 | N3 | 被「排斥踢」命中 | 踉跄 1 轮后消失，不是 ∞ |
 | N4 | 对倒下的队友用「余烬之火」 | 能选中、使用按钮可点 |
 | N5 | 用「迷乱凝视」 | 打的是意志；`diagnose().bewilderingGaze.defenseType === "willpower"` |
@@ -108,7 +110,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 4. 已知的不确定处（**别当成已验证**）
 
-1. **全部 11 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
+1. **全部 12 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
    这是当前最大的风险面，也是下一步唯一该做的事。
 2. **N2 的第三条加成（威吓 +2 骰运）没有补。**
    `rollBonuses` 每轮被重置成恰好 `{damage:{}, boons:{}, banes:{}}`（`:41179`），
@@ -147,7 +149,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 6. 下一步（按顺序）
 
-1. **开世界跑第 3 节那张表。** 11 条补丁一条真实验证都没有，这是唯一该先做的事。
+1. **开世界跑第 3 节那张表。** 12 条补丁一条真实验证都没有，这是唯一该先做的事。
 2. 按实测结果订正本文件第 4 节。
 3. 提两份 issue（清单已写好，见 `docs/上游缺陷诊断.md` 末尾）：
    一份给 `foundryvtt/crucible`（3 条），一份给 Mage Hand Press（8 条）。

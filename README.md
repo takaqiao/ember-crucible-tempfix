@@ -33,15 +33,16 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | **P2** | 凯思族「撕咬」贴着敌人反而咬不到 | ember |
 | **P3** | 血统/召唤物给了符文却没给对应小戏法；旧快照还丢了训练等级（−4） | 两侧 |
 | **P4** | 「疗愈导流」恢复的资源种类恒为生命值 | ember |
+| **N10** | **卡上写着「获得效果·∞」，人身上什么都没有——九个血统的招牌变身全部中招** | ember 数据 × crucible 校验 |
 | **N1** | 「湮灭之印」点了什么都不发生，连聊天卡都不生成 | ember |
-| **N2** | 「强化护盾」/「雷法姆变身」图标挂上但加值一条不生效 | ember |
+| **N2** | 「强化护盾」/「雷法姆变身」的加值不生效（需与 N10 同开） | ember |
 | **N3** | 「排斥踢」的踉跄**永不消失**，每回合 −2 行动点 | ember |
 | **N4** | 「余烬之火」复活友方的分支永远选不中目标 | ember |
 | **N5** | 「迷乱凝视」按护甲结算，会被「用盾牌挡下」 | ember |
 | **N6** | 「反重力石」纯自身效果却必须选别人才能用 | ember |
 | **N7** | 「暗焰头冠」用一次崩在出卡之前，资源不扣、卡不出 | ember |
 
-> **状态**：全部 11 条只有静态取证 + 74 条离线断言，**尚未在真实牌桌上验证过**。
+> **状态**：全部 12 条只有静态取证 + 94 条离线断言（另有 17/17 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
 > 详见 `HANDOFF.md` §3 的验证表。
 
 ---
@@ -160,9 +161,46 @@ this.usage.resource = lastAction.damage?.resource ?? "health";
 
 ---
 
+## N10 · 被系统拒绝创建的效果时长（影响面最大的一条）
+
+**症状**：**聊天卡白纸黑字写着「获得 XXX · 持续 ∞」，角色身上一个图标都没有。**
+控制台有一句 warn，但没人会把它和「我的变身没生效」联系起来。
+
+**九个血统的招牌变身全部中招** —— Altyra 雷法姆变身、Cor'ak 结晶创伤、Fej 极限代谢、
+Hulg'run 活石、Kivahr 律动、Thornling 荆棘皮、Vrjnhar 顽强、Wirrun 不懈猎手、Zeph 三张面具；
+外加 abyssalWhispers / bewilderingGaze / frenziedClaws / searingStare / sentinelShielding 等敌手动作。
+本机数据实测 **19 个动作 / 20 条效果**，冒险包里还有重复副本。
+
+**根因**：数据里写的是 v12 时代的 `{turns: N}`。核心的 `#migrateDuration`（foundry.mjs:15931）
+把它迁成 `{value: N, units: "turns"}` —— **迁移本身是成功的**。然后撞上 `CrucibleActiveEffect._preCreate`（`:39581`）：
+
+```js
+if ( ["months", "turns"].includes(this.duration.units) ) {
+  console.warn("The Crucible system does not support effect durations of unit \"turns\" or \"months\"!");
+  return false;                    // ← 效果压根不会被创建
+}
+```
+
+**本模块的做法**：把 `units` 由 `"turns"` 改成 `"rounds"`，数值不动，补上 `expiry: "turnStart"`。
+依据是 crucible 自己的转换惯例 —— `SYSTEM.EFFECTS.staggered`（`:5740`）的产物就是这个形状。
+
+> ⚠ 这是**解释**不是还原。上游没有 turns 这个单位，作者想要的「N 个回合」只能映射到 rounds，
+> 数值等价与否无从考证（`implacableHunter` 写的是 `turns: 360`）。所以这一条有单独开关。
+
+这也是本模块第一条**通用补丁** —— 它对每个动作都跑，作为额外的一格注入而不与动作自带的钩子合并，
+所以顶不掉任何上游实现。
+
+---
+
 ## N2 · 「强化护盾」/「雷法姆变身」丢失的加值
 
-**症状**：效果图标照常挂上，但 +3 护甲 / 辐能抗性 / 辐能伤害加值**一条都不生效**。
+> **这一节在 v0.2.0 里写错了。** 当时写的症状是「效果图标照常挂上，但加值不生效」——
+> 实际上**图标根本不会出现**：这两个动作的效果同时还踩了 N10（`units:"turns"` 被拒绝创建）。
+> 也就是说 v0.2.0 的 N2 补丁是**完全空转**的：往一个永远不会被创建的效果里写 `system.changes` 毫无意义。
+> **N2 必须与 N10 一起开才有意义**，v0.2.1 起两者都默认开启。
+
+**症状**：（在 N10 开启、效果能正常创建之后）图标挂上了，但 +3 护甲 / 辐能抗性 / 辐能伤害加值
+**一条都不生效**。
 
 **根因**：`ember.mjs:125108` / `:125149` 把 `changes` 写在了 **effect 顶层**。
 动作 effects 的 schema（`:18624`）只有 `name/scope/result/statuses/duration/system`，
