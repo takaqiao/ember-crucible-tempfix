@@ -1,0 +1,86 @@
+name: Ember / Crucible TempFix Release
+
+env:
+  project_url: 'https://github.com/${{github.repository}}'
+  latest_manifest_url: 'https://github.com/${{github.repository}}/releases/latest/download/module.json'
+  release_module_url: 'https://github.com/${{github.repository}}/releases/download/${{github.event.release.tag_name}}/module.zip'
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate module.json
+        run: jq empty module.json && echo "module.json OK"
+
+      - name: Check script syntax
+        run: node --check scripts/tempfix.mjs
+
+      # 离线冒烟测试：74 条断言，用最小 Foundry / Crucible 桩件跑完 init → setup → ready
+      - name: Offline harness
+        run: node tests/tempfix_harness.mjs
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Extract Version From Tag
+        id: get_version
+        uses: battila7/get-version-action@v2
+
+      # 仓库里的 module.json 保留真实值（本地用目录联接装的话要能直接读），
+      # 这里只把发布件的 version 与三个 URL 按 tag 覆写一遍。
+      - name: Stamp Manifest
+        run: |
+          jq --arg v "${{ steps.get_version.outputs.version-without-v }}" \
+             --arg u "${{ env.project_url }}" \
+             --arg m "${{ env.latest_manifest_url }}" \
+             --arg d "${{ env.release_module_url }}" \
+             '.version=$v | .url=$u | .manifest=$m | .download=$d' \
+             module.json > module.stamped.json
+          mv module.stamped.json module.json
+          cat module.json
+
+      - name: Create Module Archive
+        run: |
+          zip --recurse-paths ./module.zip \
+            module.json \
+            README.md \
+            CHANGELOG.md \
+            LICENSE \
+            scripts/ \
+            docs/
+
+      - name: Update Release With Files
+        uses: ncipollo/release-action@v1
+        with:
+          allowUpdates: true
+          name: ${{ github.event.release.name }}
+          draft: ${{ github.event.release.unpublished }}
+          prerelease: ${{ github.event.release.prerelease }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: './module.json, ./module.zip'
+          tag: ${{ github.event.release.tag_name }}
+          body: ${{ github.event.release.body }}
