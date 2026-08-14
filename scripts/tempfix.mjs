@@ -60,6 +60,15 @@ const ACTION_PATCHES = {};
  */
 const HOOK_OVERRIDES = [];
 
+/**
+ * 对**每一个**动作都生效的补丁。与 ACTION_PATCHES 的关键区别：
+ * 它们作为**额外的一格** yield 出去，**不与 `this.hooks` 合并** ——
+ * 所以既不会顶掉 ember 的同名钩子，也不会顶掉按 id 的补丁（见顶部前提 ②）。
+ * 只用于「整类数据都写错了、按 id 列不全」的缺陷。
+ * @type {Array<Record<string, Function>>}
+ */
+const UNIVERSAL_PATCHES = [];
+
 /* -------------------------------------------- */
 /*  P1：副手打击 + N8 徒手手位                     */
 /* -------------------------------------------- */
@@ -332,6 +341,75 @@ HOOK_OVERRIDES.push({
       globalThis._del ?? null);
   }
 });
+
+/* -------------------------------------------- */
+/*  N10：units:"turns" 的效果永远不会被创建         */
+/* -------------------------------------------- */
+
+/**
+ * **本模块目前影响面最大的一条**：19 个动作、九个血统的招牌变身，效果从来没落地过。
+ *
+ * 链条：
+ *  ① 数据里写的是 v12 时代的 `{turns: N}`（或 `{turns: N, rounds: null}`）。
+ *  ② `CrucibleAction.migrateData`（`:21573`）对每条 effect 调核心 `ActiveEffect.migrateData`，
+ *     `#migrateDuration`（foundry.mjs:15931）按 seconds→turns→rounds 找第一个**数字**属性，
+ *     补出 `{value: N, units: "turns"}`。**迁移本身是成功的。**
+ *  ③ 然后 `CrucibleActiveEffect._preCreate`（`:39581`）撞上这个：
+ *
+ *       if ( ["months", "turns"].includes(this.duration.units) ) {
+ *         console.warn("The Crucible system does not support effect durations of unit \"turns\" or \"months\"!");
+ *         return false;                    // ← 效果压根不会被创建
+ *       }
+ *
+ * 玩家看到的是：**聊天卡白纸黑字写着「获得 XXX · 持续 ∞」，角色身上一个图标都没有。**
+ * 控制台有那句 warn，但没人会把它和「我的变身没生效」联系起来。
+ *
+ * 受影响的（本机数据实测 19 个动作 / 20 条效果，冒险包里还有重复副本）：
+ * Altyra 雷法姆变身、Cor'ak 结晶创伤、Fej 极限代谢、Hulg'run 活石、Kivahr 律动、
+ * Thornling 荆棘皮、Vrjnhar 顽强、Wirrun 不懈猎手、Zeph 三张面具 —— **九个血统的招牌能力全在里面**；
+ * 外加 abyssalWhispers / bewilderingGaze / frenziedClaws / searingStare / sentinelShielding 等敌手动作。
+ *
+ * 修法：把 `units` 从 `"turns"` 改成 `"rounds"`，数值不动，补上 `expiry`。
+ * 依据是 crucible 自己的转换惯例 —— `SYSTEM.EFFECTS.staggered`（`:5740`）的产物就是
+ * `{value: turns, units: "rounds", expiry: "turnStart"}`。
+ *
+ * > ⚠ 这是**解释**不是还原：上游没有 turns 这个单位，作者想要的「N 个回合」只能映射到 rounds。
+ * >   数值等价与否无从考证（`implacableHunter` 写的是 `turns: 360`）。所以给了单独开关。
+ *
+ * 注：本机数据里 `months` 用法为 0 条，所以只处理 turns。
+ */
+/**
+ * 上游是否**仍然**拒绝 `units:"turns"`。
+ *
+ * 直接读 `_preCreate` 的源码找那道拦截 —— 与 `HOOK_OVERRIDES` 的 `guard` 是同一个思路：
+ * 上游哪天放宽了限制，这里就检测不到，补丁自动停用，**不会擅自把 turns 改写成 rounds**。
+ * 失败方向也是安全的：检测不到就什么都不做，等于没装本模块。
+ * @returns {boolean}
+ */
+let _rejectsTurns = null;
+function systemRejectsTurns() {
+  if ( _rejectsTurns !== null ) return _rejectsTurns;
+  try {
+    const src = String(CONFIG.ActiveEffect?.documentClass?.prototype?._preCreate ?? "");
+    _rejectsTurns = /["']turns["']/.test(src);
+    if ( !_rejectsTurns ) log("上游似乎已支持 turns 时长单位，N10 自动停用");
+  } catch {
+    _rejectsTurns = false;   // 读不到就别乱改
+  }
+  return _rejectsTurns;
+}
+
+const turnsDurationPatch = {
+  preActivate() {
+    if ( !systemRejectsTurns() ) return;            // 上游放宽了就别动它
+    for ( const effect of this.effects ?? [] ) {
+      const d = effect?.duration;
+      if ( !d || (d.units !== "turns") ) continue;
+      d.units = "rounds";
+      d.expiry ??= "turnStart";
+    }
+  }
+};
 
 /* -------------------------------------------- */
 /*  N2：changes 写在效果顶层                       */
@@ -626,15 +704,18 @@ function installActionHookPatch() {
   const original = A.prototype._tests;
   function* patchedTests() {
     const extra = ACTION_PATCHES[this.id];
-    if ( !extra ) {
-      yield* original.call(this);
-      return;
+    if ( extra ) {
+      const own = this.hooks;
+      for ( const test of original.call(this) ) {
+        if ( test === own ) yield Object.assign({}, own, extra);
+        else yield test;
+      }
     }
-    const own = this.hooks;
-    for ( const test of original.call(this) ) {
-      if ( test === own ) yield Object.assign({}, own, extra);
-      else yield test;
-    }
+    else yield* original.call(this);
+
+    // 通用补丁作为**额外的一格**在最后 yield：不与 hooks 合并，所以既顶不掉 ember 的钩子、
+    // 也顶不掉按 id 的补丁；放在最后是让它做最终归一化（前面任何一步写成 turns 都还救得回来）。
+    for ( const p of UNIVERSAL_PATCHES ) yield p;
   }
   patchedTests.__tempfixPatched = true;
   A.prototype._tests = patchedTests;
@@ -744,14 +825,25 @@ for ( const { actionIds } of PATCH_DEFS ) {
   for ( const id of actionIds ) PATCH_BODIES[id] = ACTION_PATCHES[id];
 }
 
+/** 对每个动作都生效的补丁及其开关 */
+const UNIVERSAL_DEFS = [
+  { setting: "patchTurnsDuration", body: turnsDurationPatch }
+];
+
 function applyToggles() {
+  const on = key => {
+    try { return game.settings.get(MODULE_ID, key); } catch { return true; }   // 尚未注册时按开处理
+  };
   for ( const { setting, actionIds } of PATCH_DEFS ) {
-    let on = true;
-    try { on = game.settings.get(MODULE_ID, setting); } catch { /* 尚未注册 */ }
+    const enabled = on(setting);
     for ( const id of actionIds ) {
-      if ( on ) ACTION_PATCHES[id] = PATCH_BODIES[id];
+      if ( enabled ) ACTION_PATCHES[id] = PATCH_BODIES[id];
       else delete ACTION_PATCHES[id];
     }
+  }
+  UNIVERSAL_PATCHES.length = 0;
+  for ( const { setting, body } of UNIVERSAL_DEFS ) {
+    if ( on(setting) ) UNIVERSAL_PATCHES.push(body);
   }
 }
 
@@ -809,8 +901,10 @@ Hooks.once("init", () => {
     "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
   bool("patchAbyssMark", "N1 修正深渊「湮灭之印」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
+  bool("patchTurnsDuration", "N10 修正被系统拒绝创建的效果时长（影响面最大）",
+    "19 个动作的效果时长写的是旧的 <code>turns</code> 单位，而系统在创建效果时会直接拒绝这个单位——<strong>聊天卡写着「获得效果」，角色身上却什么都没有</strong>。<strong>九个血统的招牌变身全部中招</strong>（雷法姆变身/结晶创伤/极限代谢/活石/律动/荆棘皮/顽强/不懈猎手/泽夫三面具）。开启后把单位换成「轮」，数值不变。注意这是解释而非还原：上游没有 turns 这个单位，原作者想要多久无从考证。");
   bool("patchEffectChanges", "N2 修正「强化护盾」/「雷法姆变身」丢失的加值",
-    "这两个动作把 changes 写在了效果数据的顶层，而系统只从 effect.system 下读——图标照常挂上，加值一条都不生效。开启后写到正确的层级。（威吓骰运那一条系统层面表达不了，仍未生效。）");
+    "这两个动作把 changes 写在了效果数据的顶层，而系统只从 effect.system 下读。<strong>本项依赖上面的 N10</strong>——它们的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。（威吓骰运那一条系统层面表达不了，仍未生效。）");
   bool("patchStaggerDuration", "N3 修正「排斥踢」的踉跄变永久",
     "duration 有 value 却没有 units，被系统整段丢弃，踉跄因此永不过期——中招的角色每回合永久少 2 点行动点。开启后补上 units=rounds。");
   bool("patchSparkScope", "N4 修正「余烬之火」的目标作用域",
@@ -857,8 +951,11 @@ Hooks.once("ready", async () => {
     RUNE_CANTRIPS,
     CANTRIP_SOURCES,
     ACTION_PATCHES,
+    UNIVERSAL_PATCHES,
     HOOK_OVERRIDES,
     reprepareActors,
+    /** 让 N10 的上游 guard 重新检测一次（测试用；正常运行时缓存一次即可） */
+    resetTurnsGuard() { _rejectsTurns = null; },
     /** 自检：把每个补丁当前的实际状态打印出来 */
     diagnose(actor) {
       actor ??= canvas?.tokens?.controlled?.[0]?.actor ?? game.user?.character;
@@ -867,6 +964,7 @@ Hooks.once("ready", async () => {
       out.patches.testsWrapped = !!A?.prototype?._tests?.__tempfixPatched;
       out.patches.actorHooksWrapped = !!CONFIG.Actor.documentClass.prototype.callActorHooks.__tempfixPatched;
       out.patches.active = Object.keys(ACTION_PATCHES);
+      out.patches.universal = UNIVERSAL_PATCHES.length ? ["turnsDuration"] : [];
       out.patches.hookOverrides = HOOK_OVERRIDES.map(o => {
         const fn = globalThis.crucible?.api?.hooks?.[o.type]?.[o.id]?.[o.hook];
         return `${o.type}.${o.id}.${o.hook}=${fn?.__tempfixOverride ? "已覆盖" : "未覆盖"}`;
