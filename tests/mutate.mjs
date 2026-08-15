@@ -38,6 +38,19 @@ const MUTATIONS = [
   ["settingOn 失败方向反了", "  try { on = game.settings.get(MODULE_ID, key); } catch { /* 未注册 → 保守生效 */ }",
                    "  try { on = game.settings.get(MODULE_ID, key); } catch { on = false; }"],
 
+  // ── 控制面板
+  ["面板漏渲染开关（少一组）", 'const groups = Object.entries(SETTING_GROUPS).map(([g, title]) => {',
+                   'const groups = Object.entries(SETTING_GROUPS).slice(1).map(([g, title]) => {'],
+  ["面板漏渲染命令（少一条）", "  const rows = COMMANDS.map(c => `",
+                   "  const rows = COMMANDS.slice(1).map(c => `"],
+  ["面板输出区不转义（XSS）", "<pre style=\"max-height:18rem;overflow:auto;user-select:all;font-size:.8em;white-space:pre-wrap\">${esc(output.text)}</pre>",
+                   "<pre style=\"max-height:18rem;overflow:auto;user-select:all;font-size:.8em;white-space:pre-wrap\">${output.text}</pre>"],
+  ["目录漏记一条（面板与设置面板不一致）",
+                   "    SETTING_CATALOG.push({ key, name, hint, group: name.slice(0, 1) });",
+                   "    if ( key !== \"patchSuddenBite\" ) SETTING_CATALOG.push({ key, name, hint, group: name.slice(0, 1) });"],
+  ["组号解析错位", "group: name.slice(0, 1)", "group: name.slice(1, 2)"],
+  ["批量开关只改一半", "  for ( const s of SETTING_CATALOG ) {", "  for ( const s of SETTING_CATALOG.slice(2) ) {"],
+
   // ── I7（上游 issue #1288）
   ["I7 不过滤（复现上游缺陷）", "      if ( c?.item && (c.item.system?.canThrow === false) ) c.viable = false;", "      "],
   ["I7 过滤方向反了", "(c.item.system?.canThrow === false)", "(c.item.system?.canThrow !== false)"],

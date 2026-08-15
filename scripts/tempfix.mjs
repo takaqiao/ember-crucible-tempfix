@@ -825,6 +825,22 @@ function installPrototypePatches() {
 const REGISTERED_SETTINGS = new Set();
 
 /**
+ * 注册时顺手记下的开关目录（键 / 显示名 / 提示 / 组号）。
+ * 控制面板拿它渲染清单 —— 与设置面板**同一个真源**，不会两边说法不一致。
+ * @type {Array<{key: string, name: string, hint: string, group: string}>}
+ */
+const SETTING_CATALOG = [];
+
+/** 组号 → 组名。与 init 里 bool() 名称的首字符对应。 */
+const SETTING_GROUPS = {
+  "①": "影响最大 —— 效果根本没被创建",
+  "②": "动作放不出去 / 点了什么都不发生",
+  "③": "能用，但结算错了",
+  "④": "回搬自上游开发版（上游发 0.10.2 后自动停用）",
+  "⑤": "显示与界面"
+};
+
+/**
  * 版本上限的**中央表**：设置键 → 上游哪个版本修好了它。
  *
  * 放中央表而不是各自挂在补丁上，是因为版本闸门此前只作用于 `PATCH_DEFS` / `UNIVERSAL_DEFS`，
@@ -1918,6 +1934,251 @@ function reprepareActors() {
 }
 
 /* -------------------------------------------- */
+/*  控制面板                                      */
+/* -------------------------------------------- */
+
+/**
+ * 命令表 —— **按钮与控制台命令一一对应**。
+ *
+ * 面板上每个按钮都把等价命令写在旁边：会用面板的人不必学命令，
+ * 要写宏 / 报 bug 的人也能直接抄走。两边跑的是同一个 `run`，不会出现「按钮和命令不一样」。
+ *
+ * @type {Array<{id: string, label: string, icon: string, command: string, effect: string,
+ *               danger?: boolean, run: () => (Promise<any>|any)}>}
+ */
+const COMMANDS = [
+  {
+    id: "diagnose",
+    label: "运行自检",
+    icon: "fa-solid fa-stethoscope",
+    command: "emberCrucibleTempFix.diagnose()",
+    effect: "逐条列出补丁**此刻**的真实状态：包装上没有、开着还是关着、命中了哪些动作。选中一个 token 会连它的角色一起查。",
+    run: () => globalThis.emberCrucibleTempFix.diagnose()
+  },
+  {
+    id: "copy",
+    label: "复制诊断报告",
+    icon: "fa-solid fa-clipboard",
+    command: "copy(emberCrucibleTempFix.diagnose())",
+    effect: "把自检结果连同系统 / Ember / 模块版本复制到剪贴板。**报 bug 时先点这个**，把内容一起贴上。",
+    async run() {
+      const report = {
+        module: game.modules.get(MODULE_ID)?.version ?? "?",
+        system: game.system?.version ?? "?",
+        ember: globalThis.ember?.version ?? "(未安装)",
+        foundry: game.version ?? "?",
+        settings: Object.fromEntries(SETTING_CATALOG.map(s => [s.key, settingOn(s.key)])),
+        diagnose: globalThis.emberCrucibleTempFix.diagnose()
+      };
+      const text = JSON.stringify(report, null, 2);
+      await game.clipboard.copyPlainText(text);
+      ui.notifications.info("诊断报告已复制到剪贴板");
+      return report;
+    }
+  },
+  {
+    id: "reprepare",
+    label: "重新准备角色数据",
+    icon: "fa-solid fa-rotate",
+    command: "emberCrucibleTempFix.reprepareActors()",
+    effect: "让刚改过的开关**立刻**作用到已经打开的角色卡上。<strong>不写盘</strong>，只是重跑一遍数据准备。改完开关发现卡上没变化就点它。",
+    run: () => { reprepareActors(); ui.notifications.info("已重新准备全部角色数据"); }
+  },
+  {
+    id: "enableAll",
+    label: "全部开启",
+    icon: "fa-solid fa-toggle-on",
+    command: "—（面板专用）",
+    effect: "把所有开关打开。这也是**默认状态** —— 装上模块什么都不点就是全开。",
+    run: () => setAllSettings(true)
+  },
+  {
+    id: "disableAll",
+    label: "全部关闭",
+    icon: "fa-solid fa-toggle-off",
+    command: "—（面板专用）",
+    effect: "把所有开关关掉，行为回到**上游原样**。用来对照「这个现象到底是不是本模块引起的」，不必停用模块刷新页面。",
+    danger: true,
+    run: () => setAllSettings(false)
+  }
+];
+
+/** 批量开关。逐个 try —— 一个失败不能连累其余的。 */
+async function setAllSettings(value) {
+  let n = 0;
+  for ( const s of SETTING_CATALOG ) {
+    try { await game.settings.set(MODULE_ID, s.key, value); n++; }
+    catch ( err ) { warn(`设置 ${s.key} 失败：${err?.message ?? err}`); }
+  }
+  ui.notifications.info(`${value ? "已开启" : "已关闭"} ${n} 项补丁`);
+  return n;
+}
+
+/** 控制台版命令表：`emberCrucibleTempFix.help()` */
+function printHelp() {
+  console.log(`%c${MODULE_ID} —— 命令表`, "font-weight:bold;font-size:13px");
+  console.table(COMMANDS.map(c => ({
+    命令: c.command,
+    效果: c.effect.replace(/<[^>]+>/g, "")
+  })));
+  console.log("%c面板：配置与设置 → 模块设置 → Ember / Crucible 临时修补 → 打开控制面板",
+    "color:#888");
+  return COMMANDS.map(c => c.command);
+}
+
+/**
+ * 控制面板本体。
+ *
+ * 类**必须懒建** —— `foundry.applications.api.ApplicationV2` 在模块顶层求值时还不一定在，
+ * 而且离线测试桩件里根本没有 foundry 这个全局。所以包在函数里、建一次缓存住。
+ */
+let _ToolboxClass = null;
+function getToolboxClass() {
+  if ( _ToolboxClass ) return _ToolboxClass;
+  const AV2 = foundry?.applications?.api?.ApplicationV2;
+  if ( !AV2 ) return null;
+
+  _ToolboxClass = class TempfixToolbox extends AV2 {
+    static DEFAULT_OPTIONS = {
+      id: "ember-crucible-tempfix-toolbox",
+      tag: "div",
+      window: { title: "Ember / Crucible 临时修补 —— 控制面板", icon: "fa-solid fa-wrench", resizable: true },
+      position: { width: 720, height: 640 },
+      actions: {
+        run: TempfixToolbox.#onRun,
+        toggle: TempfixToolbox.#onToggle
+      }
+    };
+
+    /** 上一次命令的输出，渲染在面板底部 */
+    #output = null;
+
+    static async #onRun(event, target) {
+      const cmd = COMMANDS.find(c => c.id === target.dataset.command);
+      if ( !cmd ) return;
+      try {
+        const result = await cmd.run();
+        this.#output = { ok: true, label: cmd.label, text: fmtOutput(result) };
+      } catch ( err ) {
+        this.#output = { ok: false, label: cmd.label, text: String(err?.stack ?? err) };
+      }
+      this.render();
+    }
+
+    static async #onToggle(event, target) {
+      const key = target.dataset.setting;
+      try { await game.settings.set(MODULE_ID, key, !game.settings.get(MODULE_ID, key)); }
+      catch ( err ) { ui.notifications.error(`切换 ${key} 失败：${err?.message ?? err}`); }
+      this.render();
+    }
+
+    /** @override */
+    async _renderHTML() {
+      const div = document.createElement("div");
+      div.innerHTML = renderToolbox(this.#output);
+      return div;
+    }
+
+    /** @override */
+    _replaceHTML(result, content) {
+      content.replaceChildren(...result.childNodes);
+    }
+  };
+  return _ToolboxClass;
+}
+
+/** 把命令返回值渲染成可读文本（对象走 JSON，其余走 String） */
+function fmtOutput(v) {
+  if ( v === undefined ) return "（无返回值，动作已执行）";
+  if ( typeof v === "string" ) return v;
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/** 面板 HTML。提示语里本来就带 `<strong>`，所以命令表的「效果」列不转义；其余一律转义。 */
+function renderToolbox(output) {
+  const total = SETTING_CATALOG.length;
+  const on = SETTING_CATALOG.filter(s => {
+    try { return game.settings.get(MODULE_ID, s.key); } catch { return false; }
+  }).length;
+  // 被版本上限停用的：开关开着，但 settingOn() 说不生效
+  const superseded = SETTING_CATALOG.filter(s => {
+    try { return game.settings.get(MODULE_ID, s.key) && !settingOn(s.key); } catch { return false; }
+  });
+
+  const rows = COMMANDS.map(c => `
+    <tr>
+      <td style="width:11rem"><button type="button" data-action="run" data-command="${c.id}"
+        class="${c.danger ? "" : ""}" style="width:100%">
+        <i class="${c.icon}"></i> ${esc(c.label)}</button></td>
+      <td style="width:15rem"><code style="user-select:all;font-size:.85em">${esc(c.command)}</code></td>
+      <td>${c.effect}</td>
+    </tr>`).join("");
+
+  const groups = Object.entries(SETTING_GROUPS).map(([g, title]) => {
+    const items = SETTING_CATALOG.filter(s => s.group === g);
+    if ( !items.length ) return "";
+    const lis = items.map(s => {
+      let isOn = true, effective = true;
+      try { isOn = game.settings.get(MODULE_ID, s.key); effective = isOn && settingOn(s.key); } catch { /* 读不到就当开着 */ }
+      const badge = !isOn ? `<span style="opacity:.55">已关闭</span>`
+        : effective ? `<span style="color:var(--color-level-success,#2b8a3e)">生效中</span>`
+        : `<span style="color:var(--color-level-warning,#c8860d)" title="上游已修好，本条自动停用">上游已修</span>`;
+      // 去掉组号前缀，面板里已经按组分好了
+      const label = s.name.replace(/^[①②③④⑤]\s*/, "");
+      return `<li style="display:flex;gap:.5rem;align-items:center;padding:.15rem 0">
+        <button type="button" data-action="toggle" data-setting="${esc(s.key)}"
+          style="flex:0 0 4.5rem;font-size:.8em">${isOn ? "关掉" : "开启"}</button>
+        <span style="flex:0 0 5rem;font-size:.85em">${badge}</span>
+        <span style="flex:1">${esc(label)}</span>
+        <code style="font-size:.75em;opacity:.6">${esc(s.key)}</code>
+      </li>`;
+    }).join("");
+    return `<fieldset style="margin-block:.5rem">
+      <legend>${esc(g)} ${esc(title)}</legend>
+      <ul style="list-style:none;margin:0;padding:0">${lis}</ul>
+    </fieldset>`;
+  }).join("");
+
+  const out = output ? `
+    <fieldset style="margin-block:.5rem">
+      <legend>${output.ok ? "" : "⚠ "}${esc(output.label)} 的输出</legend>
+      <pre style="max-height:18rem;overflow:auto;user-select:all;font-size:.8em;white-space:pre-wrap">${esc(output.text)}</pre>
+    </fieldset>` : "";
+
+  return `
+  <section style="padding:.5rem;overflow:auto;height:100%">
+    <p style="margin-top:0">
+      共 <strong>${total}</strong> 项补丁，当前开启 <strong>${on}</strong> 项${
+        superseded.length ? `，其中 <strong>${superseded.length}</strong> 项因上游已修好而自动停用` : ""}。
+      系统 <code>${esc(game.system?.version ?? "?")}</code>
+      · Ember <code>${esc(globalThis.ember?.version ?? "未安装")}</code>
+      · 本模块 <code>${esc(game.modules.get(MODULE_ID)?.version ?? "?")}</code>
+    </p>
+    <p style="opacity:.75;font-size:.9em">
+      全部是运行时修补，<strong>不写世界存盘数据</strong>。关掉开关即刻回到上游原行为，不需要刷新。
+    </p>
+
+    <fieldset style="margin-block:.5rem">
+      <legend>命令 —— 按钮与控制台命令等价</legend>
+      <table style="width:100%;font-size:.9em"><tbody>${rows}</tbody></table>
+      <p style="margin:.4rem 0 0;opacity:.7;font-size:.85em">
+        控制台里敲 <code style="user-select:all">emberCrucibleTempFix.help()</code> 可以打印同一张表。
+      </p>
+    </fieldset>
+
+    ${out}
+
+    <h3 style="margin-block:.75rem .25rem">补丁清单</h3>
+    <p style="margin:0 0 .5rem;opacity:.75;font-size:.85em">
+      「上游已修」= 开关还开着，但检测到上游版本已经修好了这条，于是自动让路 —— 这是正常的。
+    </p>
+    ${groups}
+  </section>`;
+}
+
+/* -------------------------------------------- */
 /*  生命周期                                      */
 /* -------------------------------------------- */
 
@@ -1929,8 +2190,10 @@ Hooks.once("init", () => {
 
   const reload = () => { applyToggles(); if ( game.ready ) reprepareActors(); };
 
+  // 组号从 name 的首字符解析（"① N10 …"），控制面板按它分组 —— 与设置面板同一个真源
   const bool = (key, name, hint) => {
     REGISTERED_SETTINGS.add(key);
+    SETTING_CATALOG.push({ key, name, hint, group: name.slice(0, 1) });
     return game.settings.register(MODULE_ID, key, {
       name, hint, scope: "world", config: true, type: Boolean, default: true, onChange: reload
     });
@@ -2008,6 +2271,21 @@ Hooks.once("init", () => {
   bool("patchFlankingToggle", "⑤ I6 修好「可视化夹击」叠层关不掉（上游 issue #1311）",
     "关闭该调试叠层时系统只清理当前选中的 token，换选之后旧图形就钉死在画布上，再点开关也清不掉，只能刷新页面。开启后关闭时清理全部 token。仅 GM 可见。");
 
+  // 控制面板入口。放在 bool() 全部注册完之后 —— 面板要读 SETTING_CATALOG。
+  // 拿不到 ApplicationV2 就安静跳过：面板是便利设施，不能因为它没建成就让整个模块炸在 init。
+  const Toolbox = getToolboxClass();
+  if ( Toolbox ) {
+    game.settings.registerMenu(MODULE_ID, "toolbox", {
+      name: "控制面板",
+      label: "打开控制面板",
+      hint: "一处看全：每条补丁此刻是否生效、一键自检、复制诊断报告、批量开关。每个按钮旁边都写着等价的控制台命令。",
+      icon: "fa-solid fa-wrench",
+      type: Toolbox,
+      restricted: true
+    });
+  }
+  else warn("拿不到 ApplicationV2，控制面板未注册（补丁本身不受影响）");
+
   game.settings.register(MODULE_ID, "redirectResource", {
     name: "P4 疗愈导流恢复哪种资源",
     hint: "条目描述说「恢复原法术所针对的那种资源」。默认「自动推断」会从最近的聊天记录里回溯那次被抵抗的法术实际打的资源，推断不到时按生命值处理。",
@@ -2054,6 +2332,21 @@ Hooks.once("ready", async () => {
     HOOK_OVERRIDES,
     VERSION_CEILINGS,
     __registeredSettings: REGISTERED_SETTINGS,
+    /** 命令表；面板上的按钮跑的是同一批 `run` */
+    COMMANDS,
+    SETTING_CATALOG,
+    SETTING_GROUPS,
+    /** 面板 HTML 生成器；离线测试用它验「每个开关/命令都真的渲染出来了」 */
+    __renderToolbox: renderToolbox,
+    /** 打印命令表 —— 控制台版的控制面板 */
+    help: printHelp,
+    /** 打开控制面板（等价于 配置与设置 → 模块设置 → 打开控制面板） */
+    openPanel() {
+      const T = getToolboxClass();
+      if ( !T ) return ui.notifications.error("这个 Foundry 版本拿不到 ApplicationV2，面板不可用");
+      return new T().render({ force: true });
+    },
+    setAllSettings,
     reprepareActors,
     installAffixTrainingFix,
     installPrototypePatches,
