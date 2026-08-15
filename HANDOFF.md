@@ -73,10 +73,10 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**136 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**136 passed / 0 failed**。
+**148 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**148 passed / 0 failed**。
 
-桩件本身也验过 —— 变异测试把 30 处补丁逐个改回坏写法，**30/30 全部被抓住**。
+桩件本身也验过 —— 变异测试把 35 处补丁逐个改回坏写法，**35/35 全部被抓住**。
 （脚本没有入库，重跑的话照 §5 的写法现写一个即可：备份 → 字符串替换 → 跑 harness → finally 还原。）
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。
@@ -112,7 +112,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 4. 已知的不确定处（**别当成已验证**）
 
-1. **全部 18 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
+1. **全部 20 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
    这是当前最大的风险面，也是下一步唯一该做的事。
 2. **N2 的第三条加成（威吓 +2 骰运）没有补。**
    `rollBonuses` 每轮被重置成恰好 `{damage:{}, boons:{}, banes:{}}`（`:41179`），
@@ -151,7 +151,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 6. 下一步（按顺序）
 
-1. **开世界跑第 3 节那张表。** 18 条补丁一条真实验证都没有，这是唯一该先做的事。
+1. **开世界跑第 3 节那张表。** 20 条补丁一条真实验证都没有，这是唯一该先做的事。
 2. 按实测结果订正本文件第 4 节。
 3. 提两份 issue（清单已写好，见 `docs/上游缺陷诊断.md` 末尾）：
    一份给 `foundryvtt/crucible`（3 条），一份给 Mage Hand Press（8 条）。
