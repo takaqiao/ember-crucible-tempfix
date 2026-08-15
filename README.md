@@ -60,8 +60,9 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | **I6** | 「可视化夹击」叠层换选后成孤儿，关不掉、只能刷新页面 | crucible |
 | **B5** | 侧栏「精选装备」最多只列得出 1 件天生武器（**回搬自上游开发版**） | crucible |
 | **N12** | 物品自带效果同样踩 N10，但不经过动作 —— 例如「Nearing Death」持有即应生效却永远建不出来 | ember 数据 × crucible 校验 |
+| **I7** | 「投掷武器」的下拉框把徒手/天生武器也列出来，选了再用就报错（上游 issue #1288） | crucible |
 
-> **状态**：31 条补丁，静态取证 + 220 条离线断言（另有变异测试证明断言真的会红）。
+> **状态**：32 条补丁，静态取证 + 232 条离线断言（另有 22/22 变异测试证明断言真的会红）。
 > 其中 **N10 已由用户实测确认**（「顽强体力」用了没效果，症状与诊断完全一致），其余仍只有静态取证。
 > 逐条的验证方法见 `HANDOFF.md` §3 —— 那张表按**设置键名**列出全部开关，可机械核对覆盖率。
 
@@ -225,6 +226,46 @@ documentAllowed &&= (noHook || Hooks.call(`preCreate${type}`, doc, createData, o
 在 `:39581` 那道拦截读 `this.duration.units` **之前** `updateSource` 改掉单位。
 
 `months` 不放行 —— 本机数据里 `months` 用法为 0 条，没有需要解释的数据，就不动上游的判断。
+
+---
+
+## I7 · 投掷武器的下拉框列出扔不出去的武器（上游 issue #1288）
+
+**症状**：「投掷武器」的选择框里出现徒手、天生武器这些**扔不出去**的东西，
+选中再用就报错。上游 issue 还提到第二个症状：**选了非法的那个之后这个动作从此点不动了，
+要重启会话或换装备才恢复。**
+
+**根因是一处缺失，不是写错。** crucible 的每个「需求标签」都在自己的 `prepare()` 里
+把用不了的武器标成不可选 —— 这是上游自己确立的写法：
+
+| 标签 | 行号 | 做法 |
+|---|---|---|
+| `melee` | `:4148` | `if (c.item.config.category.ranged) c.viable = false;` |
+| `ranged` | `:4177` | `if (!c.item.config.category.ranged) c.viable = false;` |
+| `natural` | `:4279` | 同一形状 |
+| **`thrown`** | **`:4250`** | **只设了 range，一个字都没过滤** |
+
+而 `thrown` 的 `canUse()`（`:4246`）与 `preActivate()`（`:4257`）**都**对 `!canThrow` 抛错。
+`_prepareWeaponChoices()`（`:20134`）把每一条都标 `viable: true` 出厂，
+它的注释明说「Requirement tags further restrict viability during action preparation」
+—— 就差 `thrown` 没尽这个责任。
+
+**本模块的做法**：按上游自己的形状把那个循环补上。做成**通用补丁按标签判**而不是按 action id，
+因为 `thrown` 是标签，`throwWeapon` 不是唯一带它的动作（装备包里的 `net` 也带）。
+通用补丁在 `_tests()` 里最后一格 yield，必然排在 `thrown.prepare` 之后 —— 正是需要的时机。
+
+**顺带解决了第二个症状**，理由能从代码上讲清楚：`:4036` 是
+
+```js
+const locked = this.usage.weaponChoice ? choices.find(c => c.id === this.usage.weaponChoice)?.item : null;
+```
+
+而 `choices` 取自 `getValidWeaponChoices()`（`:20167`，只留 `viable`）。补上过滤之后，
+那个非法 id **在 choices 里找不到** ⇒ `locked` 为 null ⇒ 落到 `choices.reduce(...)`
+正常挑一把能扔的。既进不去那个状态，已经进去了的下一次准备也会自动脱困。
+
+> ⚠ **诚实边界**：上游说的「要重启会话才恢复」我**没有复现过**。
+> 上面只说明了本补丁为什么让 `locked` 不再卡住 —— 若卡死另有来源，本补丁不保证解决那一半。
 
 **根因**：数据里写的是 v12 时代的 `{turns: N}`。核心的 `#migrateDuration`（foundry.mjs:15931）
 把它迁成 `{value: N, units: "turns"}` —— **迁移本身是成功的**。然后撞上 `CrucibleActiveEffect._preCreate`（`:39581`）：

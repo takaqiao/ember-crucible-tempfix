@@ -38,6 +38,14 @@ const MUTATIONS = [
   ["settingOn 失败方向反了", "  try { on = game.settings.get(MODULE_ID, key); } catch { /* 未注册 → 保守生效 */ }",
                    "  try { on = game.settings.get(MODULE_ID, key); } catch { on = false; }"],
 
+  // ── I7（上游 issue #1288）
+  ["I7 不过滤（复现上游缺陷）", "      if ( c?.item && (c.item.system?.canThrow === false) ) c.viable = false;", "      "],
+  ["I7 过滤方向反了", "(c.item.system?.canThrow === false)", "(c.item.system?.canThrow !== false)"],
+  ["I7 丢掉归属判据（所有动作都过滤）", '    if ( !this.tags?.has?.("thrown") ) return;                 // 归属判据', "    "],
+  ["I7 canThrow 缺失时也当不可扔", "(c.item.system?.canThrow === false)", "!c.item.system?.canThrow"],
+  ["I7 无视开关", '  { setting: "patchThrowableOnly", body: thrownChoicesPatch }',
+                  '  { setting: "patchTurnsDuration", body: thrownChoicesPatch }'],
+
   // ── N10
   ["N10 不改单位", '      d.units = "rounds";', '      /* mutated */'],
   ["N10 expiry 方向写反", '      d.expiry ??= "turnEnd";', '      d.expiry ??= "turnStart";'],
