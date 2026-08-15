@@ -433,6 +433,9 @@ globalThis.crucible = {
       action: HOOKS_ACTION,
       affix: HOOKS_AFFIX,
       talent: {
+        // ember.mjs:126089 / :126067 —— 源码里那两个坏查询串就是 E2 闸门的判据
+        emberWirrunLinea: { prepareAttack() { return this.effects.get("implacableHunter"); } },
+        emberVrjnharLine: { finalizeAction() { return this.effects.get("formidableStamin"); } },
         emberAbyssAttune: {
           finalizeAction: function embersFinalize() { /* 含坏 id 字面量 abyssMarkUnmak0 */ }
         }
@@ -977,6 +980,36 @@ console.log("\nI 系列：上游还没修的开放 issue");
   check("I3 拥有者仍然看得到私记", own.biography.privateHTML === "<p>GM 私记</p>");
   check("I3 非拥有者看不到私记原文", view.biography.privateHTML === "" && view.biography.privateSrc === "");
   check("I3 公开传记不受影响", view.biography.publicHTML === "<p>公开</p>");
+}
+
+console.log("\nE2：效果 ID 与 ember 的查询串对不上");
+{
+  const actor = new CrucibleActor("E2");
+
+  // 系统实际会生成 implacableHunte0（generateId(id,15)+"0"），而 ember 查 implacableHunter
+  const hunt = new CrucibleAction({ id: "implacableHunter", effects: [{ name: "Implacable Hunter" }] }, { actor });
+  hunt.preActivate();
+  check("E2 写入端对齐到 ember 要找的 id", hunt.effects[0]._id === "implacableHunter", hunt.effects[0]._id);
+  check("E2 对齐后的 id 仍是合法的 16 位", /^[a-zA-Z0-9]{16}$/.test(hunt.effects[0]._id));
+
+  const stam = new CrucibleAction({ id: "formidableStamina", effects: [{ name: "Formidable Stamina" }] }, { actor });
+  stam.preActivate();
+  check("E2 第二条同样对齐", stam.effects[0]._id === "formidableStamin", stam.effects[0]._id);
+
+  // 反向：上游自己设了 _id → 不插手
+  const preset = new CrucibleAction({ id: "implacableHunter", effects: [{ _id: "somethingElse000" }] }, { actor });
+  preset.preActivate();
+  check("E2 上游已设 _id → 不插手", preset.effects[0]._id === "somethingElse000");
+
+  // 反向（关键）：ember 把查询串改对了 → 我们必须退让，否则反而会把它的新查询打断
+  const realHook = crucible.api.hooks.talent.emberWirrunLinea;
+  crucible.api.hooks.talent.emberWirrunLinea = {
+    prepareAttack() { const q = this.effects.get("implacableHunte0"); return q; }   // ember 改对了
+  };
+  const fixed = new CrucibleAction({ id: "implacableHunter", effects: [{ name: "x" }] }, { actor });
+  fixed.preActivate();
+  check("E2 ember 改对之后 → 不再强设 _id", fixed.effects[0]._id === undefined, String(fixed.effects[0]._id));
+  crucible.api.hooks.talent.emberWirrunLinea = realHook;
 }
 
 console.log("\nI4 / E1：重复准备的加成叠加、抗性 change 少了 .bonus");

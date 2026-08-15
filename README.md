@@ -55,8 +55,9 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | **I3** | **私密传记泄漏**：limited/observer 的玩家照样读得到 GM 私记 | crucible |
 | **I4** | 位移动作重复准备，带「强化」的伤害**多 6 点**（重规划时多 18） | crucible |
 | **E1** | 「稳定护佑」把酸性抗性算成 **NaN**，此后每次酸性结算都传播 NaN | ember |
+| **E2** | Wirrun 猎物加骰 / Vrjnhar 顽强体力**从来没触发过**（按猜出来的 id 查效果） | ember |
 
-> **状态**：全部 26 条只有静态取证 + 174 条离线断言（另有 43/43 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
+> **状态**：全部 27 条只有静态取证 + 179 条离线断言（另有 46/46 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
 > 详见 `HANDOFF.md` §3 的验证表。
 
 ---

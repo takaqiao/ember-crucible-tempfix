@@ -1110,6 +1110,49 @@ PROTOTYPE_PATCHES.push({
   }
 });
 
+/**
+ * E2：**ember 两处按「猜」出来的 id 查效果，而系统生成的是另一个 —— 查询永远落空。**
+ *
+ * 效果 id 由 `#recordEffectEvents`（`:19811`）`_id || getEffectId(this.id, {suffix: String(i)})` 生成，
+ * 而 `getEffectId`（`:5358`）= `generateId(label, 16 - suffix.length) + suffix`，
+ * `generateId`（`:48066`）是 `slice(length).padEnd(length, "0")`。**完全确定性**：
+ *
+ * | 动作 id | 系统实际生成 | ember 查的 |
+ * |---|---|---|
+ * | `implacableHunter` | `implacableHunte0` | `implacableHunter`（`ember.mjs:126089`） |
+ * | `formidableStamina` | `formidableStami0` | `formidableStamin`（`ember.mjs:126067`） |
+ *
+ * 后果：Wirrun 血裔花 1 专注 + 1 英雄点标记猎物后，**朝猎物的攻击一次 +2 祝福都不会出现**；
+ * Vrjnhar 血裔的「顽强体力」（行动点见底时退还 1 点）**从头到尾一次都不触发**。
+ * 两条都是血裔的招牌能力，玩家只会以为自己记错了规则。
+ *
+ * 修法特意选了**轻的那一边**：ember 查的那两个串**本身就是合法的 16 位 id**，
+ * 而这两个动作又**各只有一条效果**（index 0，无歧义）。
+ * 所以不去替换 ember 的钩子（那要照抄几十行），而是把**写入端**的 `_id` 设成它要找的那个 ——
+ * 两边自然对上，代码量十分之一。
+ *
+ * 闸门：ember 的钩子源码里必须还能看到那个坏查询串。它哪天改对了（改成真实 id 或改成动态计算），
+ * 我们就不再强设 `_id`，系统照常生成真实 id，它自己的新查询也就能命中。
+ */
+const EFFECT_ID_ALIGNMENTS = [
+  { actionId: "implacableHunter", effectId: "implacableHunter", talent: "emberWirrunLinea", hook: "prepareAttack" },
+  { actionId: "formidableStamina", effectId: "formidableStamin", talent: "emberVrjnharLine", hook: "finalizeAction" }
+];
+
+for ( const a of EFFECT_ID_ALIGNMENTS ) {
+  ACTION_PATCHES[a.actionId] = {
+    preActivate() {
+      const effect = this.effects?.[0];
+      if ( !effect || effect._id ) return;                 // 上游自己设了 _id → 不插手
+      // 闸门：ember 那边还在用坏查询串吗？
+      const fn = globalThis.crucible?.api?.hooks?.talent?.[a.talent]?.[a.hook];
+      if ( !(fn instanceof Function) ) return;
+      if ( !String(fn).includes(`"${a.effectId}"`) ) return;   // ember 改对了 → 退让
+      effect._id = a.effectId;
+    }
+  };
+}
+
 /* -------------------------------------------- */
 /*  D 系列：描述与数据的伤害类型不一致               */
 /* -------------------------------------------- */
@@ -1476,7 +1519,8 @@ const PATCH_DEFS = [
   { setting: "patchDawnBeaconScope", actionIds: ["dawnBeacon"] },
   { setting: "patchMissingRollProvider", actionIds: ["repugnantPustules", "abyssalRemains"] },
   { setting: "patchDamageTypes", actionIds: ["noxiousSpray", "selfDestruct", "devourThoughts"] },
-  { setting: "patchWildStrike", actionIds: ["wildStrike"] }
+  { setting: "patchWildStrike", actionIds: ["wildStrike"] },
+  { setting: "patchEffectIdAlignment", actionIds: ["implacableHunter", "formidableStamina"] }
 ];
 
 /** actionId → 补丁体的原始引用（applyToggles 会按开关把它们放回/摘掉） */
@@ -1600,6 +1644,8 @@ Hooks.once("init", () => {
     "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
   bool("patchAbyssMark", "N1 修正深渊「湮灭之印」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
+  bool("patchEffectIdAlignment", "E2 让「不懈猎手」与「顽强体力」真正触发",
+    "ember 这两处按猜出来的 id 查效果，而系统生成的是另一个——查询永远落空：<strong>朝猎物的攻击一次 +2 祝福都不会出现</strong>，「顽强体力」的行动点退还从头到尾一次都不触发。两条都是血裔的招牌能力。开启后把写入端的效果 ID 对齐到它要找的那个。");
   bool("patchWildStrike", "I1 堵住「野性打击」的行动点漏洞（上游 issue #1403）",
     "没有天生武器的角色也能用「野性打击」——判据用 every() 检查空数组，真空通过。动作显示可用、生成聊天卡，但一次骰都不掷、一点伤害都不出，<strong>反而把行动点退还回来</strong>，等于无本万利的行动点发生器。开启后没有天生武器时正常拦住。");
   bool("patchHasKnowledge", "I2 让手工添加的知识真正生效（上游 issue #1412）",
