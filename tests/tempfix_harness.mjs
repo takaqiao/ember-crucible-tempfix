@@ -51,7 +51,7 @@ globalThis.game = {
   actors: [],
   scenes: [],
   packs: { get: () => ({ async getDocument(id) { return PACK[id] ?? null; } }) },
-  user: { character: null }
+  user: { character: null, isGM: false }
 };
 
 let renderCount = 0;
@@ -88,7 +88,7 @@ globalThis.foundry = {
   // T1：crucible 的角色卡全是 ApplicationV2，只活在这里
   applications: { instances: new Map([["a", { document: { documentName: "Actor" }, render() { renderCount++; } }]]) }
 };
-globalThis.canvas = { tokens: { controlled: [] } };
+globalThis.canvas = { tokens: { controlled: [], placeables: [] } };
 globalThis.performance = globalThis.performance ?? { now: () => 0 };
 globalThis._del = Symbol("delete");
 
@@ -356,12 +356,34 @@ class CrucibleArmorModel extends CruciblePhysicalStub {
 class CrucibleBaseActorSheetStub {
   constructor(document) { this.document = document; }
   async _prepareContext() {
+    // ac1b5cfc 的坏循环：上界每 push 一件就缩一格
+    const featuredEquipment = [];
+    const natural = this.document?.equipment?.weapons?.natural ?? [];
+    for ( let i = 0; i < 3 - featuredEquipment.length; i++ ) {
+      const n = natural[i];
+      if ( n ) featuredEquipment.push({ name: n.name, type: n.type, uuid: n.uuid, img: n.img, tags: [] });
+    }
     return {
+      featuredEquipment,
       biography: {
         publicField: {}, publicSrc: "公开", publicHTML: "<p>公开</p>", publicClass: "public-biography",
         privateField: {}, privateSrc: "GM 私记", privateHTML: "<p>GM 私记</p>", privateClass: "private-biography"
       }
     };
+  }
+}
+
+/**
+ * AttackRoll 桩件，复刻 `:3311` 的关键两行：
+ *   `cardData.defenseType` **人人都算**；
+ *   `if ( game.user.isGM ) cardData.targetLabel = ...`  ← 只给 GM
+ * 而模板渲染的是 `{{targetLabel}}`（standard-check-chat.hbs:13），所以非 GM 什么都看不到。
+ */
+class AttackRollStub {
+  async _prepareChatRenderContext() {
+    const cardData = { dc: 12, defenseType: "反射" };
+    if (game.user.isGM) cardData.targetLabel = cardData.defenseType + " " + cardData.dc;
+    return cardData;
   }
 }
 
@@ -424,6 +446,7 @@ HOOKS_AFFIX.arrowSpellcraft = {
 globalThis.crucible = {
   api: {
     models: { CrucibleAction },
+    dice: { AttackRoll: AttackRollStub },
     applications: {
       elements: { HTMLCrucibleCurrencyElement: CurrencyElement },
       CrucibleBaseActorSheet: CrucibleBaseActorSheetStub
@@ -980,6 +1003,55 @@ console.log("\nI 系列：上游还没修的开放 issue");
   check("I3 拥有者仍然看得到私记", own.biography.privateHTML === "<p>GM 私记</p>");
   check("I3 非拥有者看不到私记原文", view.biography.privateHTML === "" && view.biography.privateSrc === "");
   check("I3 公开传记不受影响", view.biography.publicHTML === "<p>公开</p>");
+}
+
+console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 精选装备");
+{
+  // I5 #1402：defenseType 人人都算了，但 targetLabel 只给 GM 赋值
+  const roll = new AttackRollStub();
+  game.user.isGM = false;
+  let card = await roll._prepareChatRenderContext();
+  check("I5 玩家端补上了防御类型", card.targetLabel === "反射", card.targetLabel);
+  check("I5 但不泄漏 DC 数字", !String(card.targetLabel).includes("12"));
+
+  game.user.isGM = true;
+  card = await roll._prepareChatRenderContext();
+  check("I5 GM 端仍带 DC（上游原样）", card.targetLabel === "反射 12", card.targetLabel);
+  game.user.isGM = false;
+
+  setSetting("ember-crucible-tempfix.patchDefenseTypeLabel", false);
+  card = await roll._prepareChatRenderContext();
+  check("I5 关掉开关 → 回到上游原行为（玩家端空）", !card.targetLabel);
+  setSetting("ember-crucible-tempfix.patchDefenseTypeLabel", true);
+
+  // I6 #1311：关闭时上游只清 controlled，换选后旧图形成孤儿
+  const cleared = [];
+  const mk = n => ({ name: n, _clearEngagementVisualization() { cleared.push(n); }, _visualizeEngagement() {} });
+  const t1 = mk("选中的"), t2 = mk("换选前的孤儿");
+  globalThis.canvas.tokens.controlled = [t1];
+  globalThis.canvas.tokens.placeables = [t1, t2];
+  const controls = { tokens: { tools: { debugFlanking: {
+    onChange(_e, active) {
+      globalThis.CONFIG.debug = { flanking: active };
+      for ( const token of globalThis.canvas.tokens.controlled ) {
+        if ( active ) token._visualizeEngagement(); else token._clearEngagementVisualization();
+      }
+    }
+  } } } };
+  for ( const fn of hookRegistry.getSceneControlButtons ?? [] ) fn(controls);
+  controls.tokens.tools.debugFlanking.onChange({}, false);
+  check("I6 关闭时连孤儿一起清掉", cleared.includes("换选前的孤儿"), cleared.join(","));
+  check("I6 选中的那个也照常清", cleared.includes("选中的"));
+
+  // B5 ac1b5cfc：上游的循环上界每 push 一件就缩一格
+  const claws = i => ({ name: "爪" + i, type: "weapon", uuid: "u" + i, img: "", getTags: () => ({ damage: "d", range: "r" }) });
+  const sheet = new (crucible.api.applications.CrucibleBaseActorSheet)({
+    isOwner: true,
+    equipment: { weapons: { natural: [claws(1), claws(2), claws(3)] } }
+  });
+  const ctx = await sheet._prepareContext();
+  check("B5 补齐到 3 件天生武器", ctx.featuredEquipment.length === 3, String(ctx.featuredEquipment.length));
+  check("B5 不重复已列出的", new Set(ctx.featuredEquipment.map(e => e.uuid)).size === 3);
 }
 
 console.log("\nE2：效果 ID 与 ember 的查询串对不上");
