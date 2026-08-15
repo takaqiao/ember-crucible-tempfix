@@ -1929,6 +1929,24 @@ console.log("\n开关");
     return untouched;
   })());
 
+  /**
+   * ⚠ diagnose 的 universal 一栏以前写死成 ["turnsDuration"]，
+   *   I7 加进来之后就开始漏报 —— 补丁在跑、自检却说只有一条。
+   *   用户贴 diagnose 才发现。所以这里盯两件事：每条都有 label、报出来的条数对得上。
+   */
+  {
+    const defs = globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS;
+    const noLabel = defs.filter(d => !d.label);
+    check("每条通用补丁都有 label（diagnose 靠它报名字）",
+      noLabel.length === 0, noLabel.map(d => d.setting).join(","));
+    check("label 不重复", new Set(defs.map(d => d.label)).size === defs.length);
+    const u = globalThis.emberCrucibleTempFix.diagnose().patches.universal;
+    check("diagnose 报出全部在跑的通用补丁（不是写死一条）",
+      u.length === defs.length, `报了 ${u.length} 条 / 实际 ${defs.length} 条：${u.join(",")}`);
+    check("diagnose 报的名字都能对上 label",
+      u.every(n => defs.some(d => d.label === n)), u.join(","));
+  }
+
   check("通用补丁默认全部在册（N10 + I7）",
     globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length === globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS.length,
     `${globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length} / ${globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS.length}`);

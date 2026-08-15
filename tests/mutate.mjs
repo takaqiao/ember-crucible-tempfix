@@ -38,6 +38,12 @@ const MUTATIONS = [
   ["settingOn 失败方向反了", "  try { on = game.settings.get(MODULE_ID, key); } catch { /* 未注册 → 保守生效 */ }",
                    "  try { on = game.settings.get(MODULE_ID, key); } catch { on = false; }"],
 
+  // ── diagnose 漏报通用补丁（用户贴 diagnose 才发现：universal 一栏写死成一条）
+  ["diagnose 的 universal 写死回一条", "      out.patches.universal = UNIVERSAL_PATCHES.map(body =>\n        UNIVERSAL_DEFS.find(d => d.body === body)?.label ?? \"(未命名)\");",
+                   '      out.patches.universal = UNIVERSAL_PATCHES.length ? ["turnsDuration"] : [];'],
+  ["通用补丁漏写 label", '  { setting: "patchThrowableOnly", label: "thrownChoices", body: thrownChoicesPatch }',
+                   '  { setting: "patchThrowableOnly", body: thrownChoicesPatch }'],
+
   // ── I6 的安装时机（用户贴 diagnose 才发现：首次进世界压根没生效）
   ["I6 不再就地补包已渲染的控件", "  try { wrapFlankingTool(globalThis.ui?.controls?.controls); } catch { /* 控件还没建，钩子会兜住 */ }", "  "],
   ["I6 闸门失败改回静默", '      warn("I6：上游已改写 debugFlanking 的实现，本补丁自动退让（这是正常的自我退休）");', "      "],
@@ -91,8 +97,8 @@ const MUTATIONS = [
   ["I7 过滤方向反了", "(c.item.system?.canThrow === false)", "(c.item.system?.canThrow !== false)"],
   ["I7 丢掉归属判据（所有动作都过滤）", '    if ( !this.tags?.has?.("thrown") ) return;                 // 归属判据', "    "],
   ["I7 canThrow 缺失时也当不可扔", "(c.item.system?.canThrow === false)", "!c.item.system?.canThrow"],
-  ["I7 无视开关", '  { setting: "patchThrowableOnly", body: thrownChoicesPatch }',
-                  '  { setting: "patchTurnsDuration", body: thrownChoicesPatch }'],
+  ["I7 无视开关", '{ setting: "patchThrowableOnly", label: "thrownChoices", body: thrownChoicesPatch }',
+                  '{ setting: "patchTurnsDuration", label: "thrownChoices", body: thrownChoicesPatch }'],
 
   // ── N10
   ["N10 不改单位", '      d.units = "rounds";', '      /* mutated */'],
