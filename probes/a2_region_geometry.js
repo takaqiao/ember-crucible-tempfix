@@ -267,16 +267,16 @@ function A2_runRegionGeometry({units, add, safe, toArray, R, S, upstreamMode = t
          * :4104 的 `range.maximum` 由 `usage.strikes` 里那把武器的 `system.range` 填，
          * :4049 又有 `if ( !strikes.length ) return;` —— 宿主没装/没有天生武器时
          * strike.prepare 提前 return，maximum 停在 0。这时几何确实是退化的，
-         * 但**因是空手，不是因为数据写错**（那属于 I1 那一类）。计入 weaponUnresolved，不报。
+         * 但**因是空手，不是因为数据写错**（那属于 I1 那一类）。计入 `R.a2.weaponUnresolved` 且**只跳过 G1，不跳过 T1/T2/I1**。
          */
         const strikes = safe("a2:strikes", () => toArray(p.usage?.strikes).length, 0);
-        if ( rng.weapon === true && !strikes ) {
+        const indeterminate = (rng.weapon === true) && !strikes;
+        if ( indeterminate ) {
           a2.weaponUnresolved.push({actionId: p.id, origin: u.origin, actor: u.actor?.name ?? null});
-          return;
         }
 
         const addRange = pcfg.region.addSize ? ((u.actor?.size ?? p.actor?.size ?? 0) / 2) : 0;
-        add("A2", "blocker", {...base, kind: "REGION_SPAN_ZERO",
+        if ( !indeterminate ) add("A2", "blocker", {...base, kind: "REGION_SPAN_ZERO",
           detail: `${t.type}（${pcfg.region.shape}）准备完成后跨度仍为 0。${g.formula}${g.note ? "；" + g.note : ""}`,
           observed: {span: 0, residualAddRange: addRange,
             addSize: !!pcfg.region.addSize, strikesResolved: strikes,
@@ -293,8 +293,18 @@ function A2_runRegionGeometry({units, add, safe, toArray, R, S, upstreamMode = t
     /*  A2-T1 / A2-T2  区域取靶：空 disposition 集                    */
     /* ============================================================ */
     if ( pcfg.region ) {
+      /**
+       * 误报排除用的证据：这条动作的效果各自是什么作用域。
+       * 若**全部**是 SELF，零外部目标是无害的 —— :19799 会把施法者补进 allActors，
+       * 自身效果照常应用。dawnBeacon 不属于这种（它唯一那条是 ENEMIES）。
+       */
+      const effScopes = safe("a2:effscopes",
+        () => toArray(p.effects).map(e => e?.scope ?? t.scope), []);
+      const allSelfEffects = effScopes.length > 0 && effScopes.every(s => s === SCOPES.SELF);
+
       if ( t.scope === SCOPES.SELF ) {
-        add("A2", "blocker", {...base, kind: "REGION_SCOPE_SELF",
+        add("A2", allSelfEffects ? "minor" : "blocker", {...base, kind: "REGION_SCOPE_SELF",
+          effectScopes: effScopes, allEffectsSelfScoped: allSelfEffects,
           detail: "区域类型 + target.scope = SELF：:19731 返回空数组，"
             + ":19624 的 `dispositions.includes(...)` 恒假，每个候选都被 continue ⇒ 目标恒为 0。"
             + "对照单体路径 :19687 有 `.length` 守卫，两条路径语义相反",
@@ -498,7 +508,7 @@ function A2_runRegionGeometry({units, add, safe, toArray, R, S, upstreamMode = t
  *      读准备后的值自动排除，不需要额外过滤。
  *   3. 【残余风险】若一条区域动作**只**打算给自己挂效果（effect.scope = SELF），
  *      那么零外部目标是无害的 —— 自身效果仍会应用（:19799 `allActors` 会补上施法者）。
- *      **排除法：finding 里带上 `effects[].scope`，全部为 SELF 时人工降级。**
+ *      **排除法（已代码化）：finding 带 `effectScopes` / `allEffectsSelfScoped`，全部为 SELF 时自动降级到 minor。**
  *      dawnBeacon 不属于这种：它唯一那条效果是 ENEMIES 作用域，:19874–:19876 对自身 return false。
  *
  * A2-T2 REGION_SCOPE_NONE

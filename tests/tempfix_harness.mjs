@@ -1054,6 +1054,31 @@ console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 精选装备")
   check("B5 不重复已列出的", new Set(ctx.featuredEquipment.map(e => e.uuid)).size === 3);
 }
 
+console.log("\n实测回归：强健体力（Vrjnhar 血裔）—— 用户在真实牌桌上报的第一条");
+{
+  // 用户报告：「强健体力用了以后不加效果」。取证结论 = N10。
+  // 本机两份数据的真实形态（两份都要过）：
+  //   ember.crucible-character   → duration: {turns: 6}                              （旧形态，加载时迁移）
+  //   ember.crucible-adventure   → duration: {value: 6, units: "turns", expiry: null}（已迁移形态）
+  // 消耗是 {action: 0, focus: 1, heroism: 1} —— 花掉 1 专注 + 1 英雄点，什么都拿不到。
+  const actor = new CrucibleActor("Svala");
+
+  for ( const [label, duration] of [
+    ["合集里的旧形态 {turns:6}", { turns: 6 }],
+    ["冒险包里的已迁移形态", { value: 6, units: "turns", expiry: null, expired: false }]
+  ] ) {
+    const a = new CrucibleAction({
+      id: "formidableStamina", tags: [],
+      effects: [{ name: "Formidable Stamina", scope: TARGET_SCOPES.SELF, statuses: [], duration, system: { changes: [] } }]
+    }, { actor });
+    a.preActivate();
+    const d = a.effects[0].duration;
+    check(`强健体力（${label}）：效果这次真的会被创建`, preCreateWouldReject(a.effects[0]) === false, JSON.stringify(d));
+    check(`强健体力（${label}）：时长仍是 6 轮`, d.value === 6 && d.units === "rounds", JSON.stringify(d));
+    check(`强健体力（${label}）：效果 ID 对齐到 ember 要查的那个`, a.effects[0]._id === "formidableStamin", String(a.effects[0]._id));
+  }
+}
+
 console.log("\nE2：效果 ID 与 ember 的查询串对不上");
 {
   const actor = new CrucibleActor("E2");
