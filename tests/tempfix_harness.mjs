@@ -139,7 +139,33 @@ const TAGS = {
   fire: { tag: "fire", initialize() { this.usage.damageType ??= "fire"; } },
   psychic: { tag: "psychic", initialize() { this.usage.damageType ??= "psychic"; } },
   natural: { tag: "natural", prepare() { this.usage.damageType ??= "bludgeoning"; } },
-  melee: { tag: "melee" },
+  melee: {
+    tag: "melee",
+    // :4147-4154 —— 上游确立的写法：需求标签在 prepare 里把用不了的武器标成不可选
+    prepare() {
+      if ( this.tags.has("ranged") ) return;
+      for ( const c of this.usage.weaponChoices ?? [] ) {
+        if ( c.item.config.category.ranged ) c.viable = false;
+      }
+    }
+  },
+  /**
+   * :4239-4263 —— **复刻缺陷本身**：`thrown.prepare` 只设 range，
+   * 一个字都没过滤 weaponChoices，尽管它的 canUse/preActivate 都对 !canThrow 抛错。
+   * I7 补的就是这里缺的那个循环。
+   */
+  thrown: {
+    tag: "thrown",
+    prepare() {
+      this.range.maximum ??= 10;
+      this.range.weapon = false;
+    },
+    canUse() {
+      for ( const w of this.usage.strikes ?? [] ) {
+        if ( !w.system.canThrow ) throw new Error("CannotThrow");
+      }
+    }
+  },
   // :4432 —— 累加写法，这就是 #1404 会叠加的根源
   empowered: { tag: "empowered", prepare() { this.usage.bonuses.damageBonus += 6; } }
 };
@@ -235,8 +261,36 @@ class CrucibleAction {
     // :20286 原文——注意它只重置 cost，bonuses 一个都不碰
     // Reset cost fields to their source values so that repeated prepare() calls do not accumulate costs
   }
-  /** :19162 */
-  prepare() { this._configureUsage(); this._call("initialize"); this._call("prepare"); }
+  /**
+   * `_prepareWeaponChoices()`（:20134）的桩件。**每一条都以 `viable: true` 出厂** ——
+   * 上游那段的注释写着「Requirement tags further restrict viability during action preparation」，
+   * 也就是把过滤责任交给了各个需求标签。I7 修的正是 `thrown` 没尽这个责任。
+   */
+  _prepareWeaponChoices() {
+    if ( !this.__weapons ) return null;
+    return this.__weapons.map(w => ({ item: w, id: w.id, label: w.name, viable: true }));
+  }
+  /** :20167 —— 只留 viable 的那些 */
+  getValidWeaponChoices() { return (this.usage.weaponChoices ?? []).filter(c => c.viable); }
+  /**
+   * `strike.prepare`(:4034-4044) 里挑武器那一段。`locked` 只在 **valid** 集合里找 ——
+   * 这正是「非法选项从列表里消失后，卡住的选择会自动脱困」的机制所在。
+   */
+  _resolveWeapon() {
+    if ( !this.usage.weaponChoices ) return;
+    const choices = this.getValidWeaponChoices();
+    const locked = this.usage.weaponChoice ? choices.find(c => c.id === this.usage.weaponChoice)?.item : null;
+    this.usage.weapon = locked ?? choices[0]?.item;
+    this.usage.strikes = this.usage.weapon ? [this.usage.weapon] : [];
+  }
+  /** :19162 —— weaponChoices 在 _configureUsage(:20305) 里就绪，早于 prepare(:20314) */
+  prepare() {
+    this._configureUsage();
+    this.usage.weaponChoices = this._prepareWeaponChoices();
+    this._call("initialize");
+    this._call("prepare");
+    this._resolveWeapon();
+  }
   canUse() { this._call("canUse"); }
   preActivate() { this._call("preActivate"); }
 }
@@ -913,6 +967,68 @@ console.log("\nN12：物品自带效果的 turns 时长（N10 的 preActivate �
   CONFIG.ActiveEffect.documentClass = realDoc;
 }
 
+console.log("\nI7：投掷武器的下拉框只列扔得出去的武器（上游 issue #1288）");
+{
+  const wp = (id, name, canThrow, ranged = false) =>
+    ({ id, name, system: { canThrow }, config: { category: { ranged } } });
+  const mk = (weapons, tags = ["thrown", "melee"]) => {
+    const a = new CrucibleAction({ id: "throwWeapon", tags }, {});
+    a.__weapons = weapons;
+    return a;
+  };
+
+  // 复现上游缺陷本身：不打补丁时徒手也在可选列表里
+  const bare = mk([wp("dagger", "匕首", true), wp("fist", "徒手", false)]);
+  bare.usage.weaponChoices = bare._prepareWeaponChoices();
+  check("上游出厂时每一条都是 viable（缺陷本身）",
+    bare.usage.weaponChoices.every(c => c.viable));
+
+  const a = mk([wp("dagger", "匕首", true), wp("fist", "徒手", false), wp("claw", "利爪", false)]);
+  a.prepare();
+  const ids = a.getValidWeaponChoices().map(c => c.id);
+  check("I7 扔不出去的被标成不可选", ids.join(",") === "dagger", ids.join(","));
+  check("I7 不可选的仍留在完整列表里（只是 viable=false，不是删掉）",
+    a.usage.weaponChoices.length === 3, String(a.usage.weaponChoices.length));
+
+  // 幂等：再准备一次结果不变
+  a.prepare();
+  check("I7 幂等", a.getValidWeaponChoices().map(c => c.id).join(",") === "dagger");
+
+  // 第二个症状：卡在非法选择上的动作应当自动脱困
+  const stuck = mk([wp("dagger", "匕首", true), wp("fist", "徒手", false)]);
+  stuck.usage.weaponChoice = "fist";                 // 玩家上次选中了扔不出去的那个
+  stuck.prepare();
+  check("I7 卡住的非法选择会自动落回能扔的那把", stuck.usage.weapon?.id === "dagger",
+    String(stuck.usage.weapon?.id));
+  check("I7 脱困后 canUse 不再抛错", (() => { try { stuck.canUse(); return true; } catch { return false; } })());
+
+  // 反向 ①：没有 thrown 标签的动作一概不碰
+  const nt = mk([wp("dagger", "匕首", true), wp("fist", "徒手", false)], ["melee"]);
+  nt.prepare();
+  check("I7 只管带 thrown 标签的动作", nt.getValidWeaponChoices().length === 2,
+    String(nt.getValidWeaponChoices().length));
+
+  // 反向 ②：canThrow 读不到（上游改了结构）时不猜——只有显式 false 才标不可选
+  const unknown = mk([{ id: "x", name: "结构变了", system: {}, config: { category: { ranged: false } } }]);
+  unknown.prepare();
+  check("I7 canThrow 读不到时不猜（保守放行）", unknown.getValidWeaponChoices().length === 1);
+
+  // 反向 ③：关掉开关 → 回到上游原行为
+  setSetting("ember-crucible-tempfix.patchThrowableOnly", false);
+  const off = mk([wp("dagger", "匕首", true), wp("fist", "徒手", false)]);
+  off.prepare();
+  check("I7 关掉开关 → 回到上游原行为（徒手又出现了）",
+    off.getValidWeaponChoices().length === 2, String(off.getValidWeaponChoices().length));
+  setSetting("ember-crucible-tempfix.patchThrowableOnly", true);
+
+  // 反向 ④：不能顶掉 melee 标签自己的过滤（两条要能叠加）
+  const both = mk([wp("dagger", "匕首", true), wp("bow", "弓", true, true)]);
+  both.prepare();
+  check("I7 与 melee 的过滤叠加而不是互相覆盖",
+    both.getValidWeaponChoices().map(c => c.id).join(",") === "dagger",
+    both.getValidWeaponChoices().map(c => c.id).join(","));
+}
+
 console.log("\nN11 符文 Spellcraft 词缀的训练等级");
 {
   // 复刻真实调用：this 绑定 actor **文档**（文档上没有 training getter）
@@ -1520,7 +1636,9 @@ console.log("\n开关");
     return untouched;
   })());
 
-  check("通用补丁默认在册", globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length === 1);
+  check("通用补丁默认全部在册（N10 + I7）",
+    globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length === globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS.length,
+    `${globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length} / ${globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS.length}`);
   check("关掉 N10 → 时长不再被改写", (() => {
     setSetting("ember-crucible-tempfix.patchTurnsDuration", false);
     const a = new CrucibleAction({ id: "tyraphicTransformation", effects: [{ system: {}, duration: { turns: 6 } }] }, {});

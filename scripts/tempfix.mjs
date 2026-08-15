@@ -1759,8 +1759,59 @@ for ( const { actionIds } of PATCH_DEFS ) {
 }
 
 /** 对每个动作都生效的补丁及其开关 */
+/* -------------------------------------------- */
+/*  I7：投掷武器下拉框列出扔不出去的武器（上游 issue #1288）  */
+/* -------------------------------------------- */
+
+/**
+ * I7（上游 issue #1288）：「投掷武器」的下拉框把**扔不出去的**武器也列出来
+ * —— 徒手、天生武器、以及任何 `canThrow` 为假的东西。
+ *
+ * 上游 issue 还提到第二个症状：**选了非法的那个再去用，这个动作从此点不动了，
+ * 要重启会话或换装备才恢复。**
+ *
+ * 根因是一处**缺失**，不是写错。crucible 的每个「需求标签」都在自己的 `prepare()` 里
+ * 把用不了的武器标成不可选 —— 这是上游自己确立的写法：
+ *  - `melee`（`:4148`）  `if (c.item.config.category.ranged) c.viable = false;`
+ *  - `ranged`（`:4177`） `if (!c.item.config.category.ranged) c.viable = false;`
+ *  - `natural`（`:4279`）同一形状
+ * 而 `thrown` 的 `prepare()`（`:4250-4253`）**只设了 range，一个字都没过滤**，
+ * 尽管它的 `canUse()`（`:4246`）与 `preActivate()`（`:4257`）都对 `!canThrow` 抛错。
+ * `_prepareWeaponChoices()`（`:20134`）把每一条都标 `viable: true` 出厂，
+ * 注释明说「Requirement tags further restrict viability」—— 就差 `thrown` 没做。
+ *
+ * 本补丁按上游自己的形状把那个循环补上。
+ *
+ * 顺带把第二个症状一起解决了，理由能从代码上讲清楚：
+ * `:4036` 是 `const locked = this.usage.weaponChoice ? choices.find(c => c.id === …)?.item : null;`
+ * 而 `choices` 取自 `getValidWeaponChoices()`（`:20167`，只留 `viable`）。
+ * 补上过滤之后，那个非法 id **在 choices 里找不到** ⇒ `locked` 为 null ⇒
+ * 落到下面的 `choices.reduce(...)` 正常挑一把能扔的。也就是说：
+ * 既进不去那个状态，已经进去了的下一次准备也会自动脱困。
+ *
+ * ⚠ 诚实边界：上游说的「要重启会话才恢复」我**没有复现过**，
+ * 上面只是说明本补丁为什么让 `locked` 不再卡住 —— 如果卡死另有来源（比如卡在别处的缓存），
+ * 本补丁不保证解决那一半。
+ *
+ * 为什么做成通用补丁而不是按 id：`thrown` 是**标签**，`throwWeapon`（`:4857`）不是唯一带它的动作
+ * （装备包里的 `net` 也带）。按标签判、按上游语义走。
+ * 通用补丁在 `_tests()` 里**最后**一格 yield，所以必然排在 `thrown.prepare` 之后 —— 正是需要的时机。
+ */
+const thrownChoicesPatch = {
+  prepare() {
+    if ( !this.tags?.has?.("thrown") ) return;                 // 归属判据
+    const choices = this.usage?.weaponChoices;
+    if ( !Array.isArray(choices) ) return;                     // 上游改了结构就别动
+    // 上游哪天自己补上了这个过滤，这里就是空转（幂等：已经 false 的再设一次还是 false）
+    for ( const c of choices ) {
+      if ( c?.item && (c.item.system?.canThrow === false) ) c.viable = false;
+    }
+  }
+};
+
 const UNIVERSAL_DEFS = [
-  { setting: "patchTurnsDuration", body: turnsDurationPatch }
+  { setting: "patchTurnsDuration", body: turnsDurationPatch },
+  { setting: "patchThrowableOnly", body: thrownChoicesPatch }
 ];
 
 /**
@@ -1936,6 +1987,8 @@ Hooks.once("init", () => {
     "带 rune 的天赋（ember 四血统、以及召唤合集里九条旧快照）都没带该符文的招牌小戏法；旧快照还连训练等级一起丢了，导致本命符文法术按「未受训 −4」结算。开启后在运行时补齐。");
   bool("patchHasKnowledge", "③ I2 让手工添加的知识真正生效（上游 issue #1412）",
     "系统判断「角色有没有某项知识」时只读背景给的那一份，GM 手工加的知识一律当作不存在——用「评估强度」「洞察弱点」时本该拿到的 +2 祝福不会出现。开启后改读角色的知识聚合值。");
+  bool("patchThrowableOnly", "③ I7 投掷武器的下拉框只列扔得出去的武器（上游 issue #1288）",
+    "「投掷武器」的选择框把徒手、天生武器这些<strong>扔不出去</strong>的也列了出来，选中再用就报错。上游每个需求标签都会在准备阶段把用不了的武器标成不可选（近战标签排除远程武器、远程标签排除近战武器、天生标签同理），唯独「投掷」标签漏了这一步。开启后按上游自己的写法补上。<br>上游 issue 还提到「选了非法的那个之后这个动作从此点不动、要重启会话才恢复」——非法选项从可选列表里消失后，系统锁定所选武器的那一步会找不到它、自动落回正常挑选，因此下一次准备就会脱困。<strong>但那半个症状本模块没有复现过</strong>，若卡死另有来源则不保证解决。");
 
   // ── ④ 回搬自上游开发版（上游发 0.10.2 后自动停用） ────────────────────────────────
   bool("patchEnchantmentBonus", "④ B1/B2 回搬：词缀推导的附魔加值不生效（上游 bea623d8）",

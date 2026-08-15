@@ -42,6 +42,7 @@
 | **N7** `darkflameCirclet` | 用一次崩在出卡之前，资源不扣、卡不出 | composed 标签只对法术合法 |
 | **N11** 12 个符文 Spellcraft 词缀 | 拿到符文却按「未受训 −4」算；控制台刷错误 | crucible 把 training 写到了文档而非数据模型 |
 | **N12** 原型补丁 | 物品**自带**的效果同样踩 N10，但创建不经过动作 —— `preActivate` 够不着 | 只能包 `CrucibleActiveEffect#_preCreate`；`preCreateActiveEffect` 钩子那条路是死的 |
+| **I7** 通用补丁 | 投掷武器的下拉框列出扔不出去的武器（上游 issue #1288） | `thrown` 标签漏了别的需求标签都做的 viable 过滤 |
 
 根因、行号级证据、以及同一份数据里的写法对照，全在 `docs/上游缺陷诊断.md`。
 **不要重新推导** —— 那份文档每条结论都带 `crucible-compiled.mjs` / `ember.mjs` 的行号。
@@ -58,8 +59,8 @@ C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── HANDOFF.md                 ← 本文件
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 与 §7 撤回记录、§6 已排除清单
 ├── tests\
-│   ├── tempfix_harness.mjs    ← 离线断言 222 条（不需要 Foundry）
-│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（17/17）
+│   ├── tempfix_harness.mjs    ← 离线断言 232 条（不需要 Foundry）
+│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（22/22）
 └── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
     ├── dump_all.mjs / dump_pack.mjs / dump_actions.mjs / index_actions.mjs / find_field.mjs
     │                           ← LevelDB 合集离线导出与检索（node；需要仓库根的 classic-level）
@@ -82,8 +83,8 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**222 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**222 passed / 0 failed**。
+**232 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**232 passed / 0 failed**。
 
 断言本身也验过 —— 变异测试把补丁逐个改回坏写法，期望 harness **变红**：
 
@@ -91,7 +92,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 ```
 
-当前 **17 处变异，17/17 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
+当前 **22 处变异，22/22 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
 加补丁时**同时加一条变异**：一条永远绿的断言和没有断言是一回事 ——
 这个脚本抓出过多条假绿，最近一条是「`settingOn` 读不到设置时保守生效」从来没被断言过。
 
@@ -155,6 +156,8 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 | `patchCurrencyPopout` | B3 | 角色卡弹成独立窗口 | 货币不为 0 |
 | `patchFlankingToggle` | I6 | 开夹击叠层 → 换选别的 token → 关叠层 | 旧图形也消失，不用刷新 |
 | `patchFeaturedEquipment` | B5 | 打开多爪多牙怪物的卡，看侧栏精选装备 | 列出 3 件天生武器 |
+| `patchThrowableOnly` | **I7** | 装一把匕首（可投掷）+ 有天生武器的角色，打开「投掷武器」的武器下拉框 | 只列得出匕首；徒手/天生武器不再出现 |
+| `patchThrowableOnly` | I7′ | 先在**关掉**本项时选中一个扔不出去的武器并使用（复现卡死），再开回来 | 下一次准备自动落回能扔的那把，动作恢复可用 |
 
 **C 组 —— 需要第二个玩家端登录（不是 30 秒能做完的，单独排时间）**
 
@@ -177,7 +180,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 
 ## 4. 已知的不确定处（**别当成已验证**）
 
-1. **31 条里只有 N10 得到过真实验证。** 其余全部只有静态取证 + 桩件断言。
+1. **32 条里只有 N10 得到过真实验证。** 其余全部只有静态取证 + 桩件断言。
    这是当前最大的风险面，也是下一步唯一该做的事。
    - ✅ **N10 已确认**：用户实测「顽强体力」（`formidableStamina`）用了没任何效果，
      1 专注 + 1 英勇白扣 —— 症状与诊断逐字吻合。这是第一条、也是目前唯一一条被现实证实的诊断。
