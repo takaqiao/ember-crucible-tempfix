@@ -1693,6 +1693,8 @@ function applyToggles() {
     }
   }
   applySwallowEffectId(active({ setting: "patchSwallowEffectId" }));
+  // N11 与 HOOK_OVERRIDES 都是「装上就不卸」的，运行时切开关必须能双向生效
+  if ( globalThis.game?.ready ) { try { installAffixTrainingFix(); } catch { /* 忽略 */ } }
   UNIVERSAL_PATCHES.length = 0;
   for ( const def of UNIVERSAL_DEFS ) {
     if ( active(def) ) UNIVERSAL_PATCHES.push(def.body);
@@ -1754,7 +1756,7 @@ Hooks.once("init", () => {
   bool("patchAbyssMark", "N1 修正深渊「湮灭之印」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
   bool("patchEffectIdAlignment", "E2 让「不懈猎手」与「顽强体力」真正触发",
-    "ember 这两处按猜出来的 id 查效果，而系统生成的是另一个——查询永远落空：<strong>朝猎物的攻击一次 +2 祝福都不会出现</strong>，「顽强体力」的行动点退还从头到尾一次都不触发。两条都是血裔的招牌能力。开启后把写入端的效果 ID 对齐到它要找的那个。");
+    "ember 这两处按猜出来的 id 查效果，而系统生成的是另一个——查询永远落空：<strong>朝猎物的攻击一次 +2 祝福都不会出现</strong>，「顽强体力」的行动点退还从头到尾一次都不触发。两条都是血裔的招牌能力。开启后把写入端的效果 ID 对齐到它要找的那个。<strong>本项依赖 N10</strong>——这两个动作的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。");
   bool("patchWildStrike", "I1 堵住「野性打击」的行动点漏洞（上游 issue #1403）",
     "没有天生武器的角色也能用「野性打击」——判据用 every() 检查空数组，真空通过。动作显示可用、生成聊天卡，但一次骰都不掷、一点伤害都不出，<strong>反而把行动点退还回来</strong>，等于无本万利的行动点发生器。开启后没有天生武器时正常拦住。");
   bool("patchHasKnowledge", "I2 让手工添加的知识真正生效（上游 issue #1412）",
@@ -1868,6 +1870,39 @@ Hooks.once("ready", async () => {
         const fn = globalThis.crucible?.api?.hooks?.[o.type]?.[o.id]?.[o.hook];
         return `${o.type}.${o.id}.${o.hook}=${fn?.__tempfixOverride ? "已覆盖" : "未覆盖"}`;
       });
+      // 原型包装类补丁（10 条）在上面那几个字段里**一个都不出现** ——
+      // 曾经因此让「关掉开关看 patches.active 有没有变」这个自检法对一半补丁失效。
+      // 两条轴是独立的：**装没装上**看上游 guard 有没有通过；**生不生效**看开关
+      //（包装体永不卸载，开关是在包装体内部实时读的）。
+      // 每行各自 try/catch —— diagnose 是最后的自检手段，它自己抛异常比少打几个字段严重得多。
+      out.patches.prototypes = PROTOTYPE_PATCHES.map(p => {
+        let wrapped = "解析失败";
+        try {
+          const fn = p.resolve()?.prototype?.[p.method];
+          wrapped = fn ? (fn.__tempfixPatched ? "已包装" : "未包装") : "找不到方法";
+        } catch { /* 结构变了 */ }
+        let onOff = "?";
+        try { onOff = game.settings.get(MODULE_ID, p.setting) ? "开" : "关"; } catch { /* 未注册 */ }
+        return `${p.label} = ${wrapped} / ${onOff}`;
+      });
+      // 既不走 ACTION_PATCHES 也不走 PROTOTYPE_PATCHES 的三条
+      out.patches.others = (() => {
+        const o = {};
+        try {
+          const cur = globalThis.crucible?.api?.hooks?.action?.swallow?._SWALLOWED_EFFECT_ID;
+          o.swallowEffectId = `${cur}（${cur?.length ?? "?"} 字符）`;
+        } catch { o.swallowEffectId = "解析失败"; }
+        try {
+          const affix = globalThis.crucible?.api?.hooks?.affix ?? {};
+          o.affixTrainingFixed = Object.values(affix)
+            .filter(c => c?.prepareGrimoire?.__tempfixOverride).length;
+        } catch { o.affixTrainingFixed = "解析失败"; }
+        try {
+          const t = ui.controls?.controls?.tokens?.tools?.debugFlanking?.onChange;
+          o.flankingToggleWrapped = t ? !!t.__tempfixPatched : "工具未注册";
+        } catch { o.flankingToggleWrapped = "解析失败"; }
+        return o;
+      })();
       out.patches.cantripsCached = Object.keys(CANTRIP_SOURCES);
       if ( actor ) {
         const bite = actor.actions?.suddenBite;
