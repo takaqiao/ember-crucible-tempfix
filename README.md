@@ -196,8 +196,16 @@ if ( ["months", "turns"].includes(this.duration.units) ) {
 }
 ```
 
-**本模块的做法**：把 `units` 由 `"turns"` 改成 `"rounds"`，数值不动，补上 `expiry: "turnStart"`。
-依据是 crucible 自己的转换惯例 —— `SYSTEM.EFFECTS.staggered`（`:5740`）的产物就是这个形状。
+**本模块的做法**：把 `units` 由 `"turns"` 改成 `"rounds"`，数值不动，补上 **`expiry: "turnEnd"`**。
+
+依据是上游自己迁移**同一种数据**时的映射：commit `48bf4391f7`（PR #695
+「Migrate ActiveEffect expiry to V14 native schema」）把自家 `_source` 里旧的
+`{turns:N, rounds:null}` 全部迁成 `{value:N, units:"rounds", expiry:"turnEnd"}` —— 实测 **49/49，零例外**。
+
+> v0.2.1 曾经用 `turnStart`，**那是写反的** —— `turnStart` 是上游给 `{rounds:N}` 那种数据的映射，
+> 套到 turns 数据上会让九大血统的变身多撑约两个 turn。v0.2.2 已订正。
+> （**N3 排斥踢仍用 `turnStart`**：它的数据不是 turns 型，最近的权威是
+> crucible 自家的 `SYSTEM.EFFECTS.staggered` 生成器 `:5740`，产出就是 turnStart。）
 
 > ⚠ 这是**解释**不是还原。上游没有 turns 这个单位，作者想要的「N 个回合」只能映射到 rounds，
 > 数值等价与否无从考证（`implacableHunter` 写的是 `turns: 360`）。所以这一条有单独开关。
