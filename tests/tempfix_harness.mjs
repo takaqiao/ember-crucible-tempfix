@@ -26,6 +26,9 @@ const fire = async (name, ...args) => {
 /** 桩件里 settings 要保存 onChange 并在 set 时调用 —— 否则「开关」那两条断言恒真。 */
 const settings = new Map();
 const settingDefs = new Map();
+const getSetting = key => settings.get(key);
+/** 与 tempfix.mjs 里的 esc() 同款，供面板断言比对 */
+const esc = v => String(v).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const setSetting = (key, value) => {
   settings.set(key, value);
   const cfg = settingDefs.get(key);
@@ -35,12 +38,18 @@ const setSetting = (key, value) => {
 const UUID_REGISTRY = new Map();
 globalThis.fromUuidSync = uuid => UUID_REGISTRY.get(uuid) ?? null;
 
+const registeredMenus = [];
 globalThis.game = {
   ready: false,
+  version: "14.0.0",
+  modules: { get: id => ({ id, version: "0.6.1", active: true }) },
   system: { id: "crucible", version: "0.10.1" },
   i18n: { format: (k, d) => `${k}:${JSON.stringify(d)}` },
   settings: {
     register(mod, key, cfg) { const k = `${mod}.${key}`; settingDefs.set(k, cfg); settings.set(k, cfg.default); },
+    // registerMenu 只在拿得到 ApplicationV2 时才被调用；桩件里记下来供断言核对
+    registerMenu(mod, key, data) { registeredMenus.push({ key: `${mod}.${key}`, ...data }); },
+    set(mod, key, value) { setSetting(`${mod}.${key}`, value); return Promise.resolve(value); },
     get(mod, key) {
       const k = `${mod}.${key}`;
       if (!settings.has(k)) throw new Error(`not registered ${k}`);
@@ -58,10 +67,16 @@ let renderCount = 0;
 let warnCount = 0;
 const _realWarn = console.warn;
 console.warn = (...a) => { warnCount++; _realWarn(...a); };
+let notifications = [];
 globalThis.ui = {
   actors: { render() {} },
   // V1 窗口表（crucible 里其实一个都没有，保留是为了断言两个循环都跑到）
-  windows: { 0: { actor: {}, render() { renderCount++; } } }
+  windows: { 0: { actor: {}, render() { renderCount++; } } },
+  notifications: {
+    info: m => notifications.push(["info", m]),
+    warn: m => notifications.push(["warn", m]),
+    error: m => notifications.push(["error", m])
+  }
 };
 
 const setProperty = (obj, path, value) => {
@@ -1606,6 +1621,75 @@ console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍
   check("撤掉 getter → N11 恢复安装", globalThis.emberCrucibleTempFix.installAffixTrainingFix() === true);
 
   setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+}
+
+console.log("\n控制面板与命令表");
+{
+  const T = globalThis.emberCrucibleTempFix;
+  const cat = T.SETTING_CATALOG;
+  const cmds = T.COMMANDS;
+
+  // 目录必须与实际注册的开关一一对应 —— 面板照它渲染，漏一条就是面板上少一个开关
+  const regd = T.__registeredSettings;
+  check("目录条数 = 注册的开关数", cat.length === regd.size, `${cat.length} / ${regd.size}`);
+  check("目录里每个键都注册过", cat.every(s => regd.has(s.key)),
+    cat.filter(s => !regd.has(s.key)).map(s => s.key).join(","));
+  check("注册的每个开关都在目录里", [...regd].every(k => cat.some(s => s.key === k)),
+    [...regd].filter(k => !cat.some(s => s.key === k)).join(","));
+  check("目录没有重复键", new Set(cat.map(s => s.key)).size === cat.length);
+
+  // 组号：面板按它分组，写错一个组号那条就整个不显示
+  const GROUPS = new Set(["①", "②", "③", "④", "⑤"]);
+  const badGroup = cat.filter(s => !GROUPS.has(s.group));
+  check("每条都落在已知分组里（面板漏渲染的直接来源）", badGroup.length === 0,
+    badGroup.map(s => `${s.key}:${s.group}`).join(","));
+  for ( const g of GROUPS ) {
+    check(`分组 ${g} 非空`, cat.some(s => s.group === g));
+  }
+
+  // 命令表
+  check("命令 id 不重复", new Set(cmds.map(c => c.id)).size === cmds.length);
+  check("每条命令都有可执行的 run", cmds.every(c => typeof c.run === "function"));
+  check("每条命令都写了等价命令与效果", cmds.every(c => c.command && c.effect && c.label));
+  check("help() 返回全部命令", T.help().length === cmds.length);
+
+  // 批量开关：面板上「全部关闭」必须真的全关，而不是关一半
+  const restore = cat.map(s => [s.key, getSetting(`ember-crucible-tempfix.${s.key}`)]);
+  await T.setAllSettings(false);
+  check("全部关闭 → 一条都不剩",
+    cat.every(s => getSetting(`ember-crucible-tempfix.${s.key}`) === false));
+  check("全部关闭后动作补丁表清空", Object.keys(T.ACTION_PATCHES).length === 0,
+    Object.keys(T.ACTION_PATCHES).join(","));
+  check("全部关闭后通用补丁也清空", T.UNIVERSAL_PATCHES.length === 0);
+
+  await T.setAllSettings(true);
+  check("全部开启 → 全都回来",
+    cat.every(s => getSetting(`ember-crucible-tempfix.${s.key}`) === true));
+  check("全部开启后通用补丁回到满员", T.UNIVERSAL_PATCHES.length === T.UNIVERSAL_DEFS.length);
+
+  for ( const [k, v] of restore ) setSetting(`ember-crucible-tempfix.${k}`, v);
+
+  // 面板 HTML：点不了按钮，但至少能验「每一项都真的渲染出来了」——
+  // 漏渲染是静默失败，面板上少一个开关不会有任何报错。
+  const html = T.__renderToolbox(null);
+  const missingSettings = cat.filter(s => !html.includes(`data-setting="${s.key}"`));
+  check("面板渲染出了每一个开关的切换按钮", missingSettings.length === 0,
+    missingSettings.map(s => s.key).join(","));
+  const missingCmds = cmds.filter(c => !html.includes(`data-command="${c.id}"`));
+  check("面板渲染出了每一条命令的按钮", missingCmds.length === 0,
+    missingCmds.map(c => c.id).join(","));
+  check("面板把等价命令原文写出来了",
+    cmds.filter(c => c.command !== "—（面板专用）").every(c => html.includes(esc(c.command))),
+    cmds.filter(c => c.command !== "—（面板专用）" && !html.includes(esc(c.command))).map(c => c.id).join(","));
+  check("面板列出了五个分组", Object.keys(T.SETTING_GROUPS ?? {}).length === 5 ||
+    ["①", "②", "③", "④", "⑤"].every(g => html.includes(`<legend>${g}`)));
+
+  // 输出区：命令跑完的结果要显示在面板里，且必须转义（诊断里含用户可控的角色名）
+  const withOut = T.__renderToolbox({ ok: true, label: "自检", text: '<img src=x onerror=alert(1)>' });
+  check("面板输出区转义了内容（角色名可能含尖括号）",
+    withOut.includes("&lt;img") && !withOut.includes("<img src=x"));
+  check("面板输出区把失败也显示出来",
+    T.__renderToolbox({ ok: false, label: "自检", text: "boom" }).includes("⚠"));
 }
 
 console.log("\nT1 角色卡刷新");
