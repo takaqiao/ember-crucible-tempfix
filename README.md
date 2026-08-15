@@ -29,11 +29,11 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 
 | 补丁 | 症状 | 谁的问题 |
 |---|---|---|
-| **P1** | 打完主手点副手打击说「必须紧跟一次主手打击」，**空手时必然发生** | crucible |
+| **P1**（含 N8） | 打完主手点副手打击说「必须紧跟一次主手打击」，**空手时必然发生** | crucible |
 | **P2** | 凯思族「撕咬」贴着敌人反而咬不到 | ember |
-| **P3** | 血统/召唤物给了符文却没给对应小戏法；旧快照还丢了训练等级（−4） | 两侧 |
+| **P3**（含 N9） | 血统/召唤物给了符文却没给对应小戏法；旧快照还丢了训练等级（−4） | 两侧 |
 | **P4** | 「疗愈导流」恢复的资源种类恒为生命值 | ember |
-| **N10** | **卡上写着「获得效果·∞」，人身上什么都没有——九个血统的招牌变身全部中招** | ember 数据 × crucible 校验 |
+| **N10** | **卡上写着「获得效果·∞」，人身上什么都没有——九个血统的招牌变身全部中招**（38 个动作，crucible 自己也占 7 个） | ember 数据 × crucible 校验 |
 | **N11** | 符文词缀给了符文知识，却按「未受训 −4」结算；控制台每次数据准备刷错误 | crucible |
 | **N1** | 「湮灭之印」点了什么都不发生，连聊天卡都不生成 | ember |
 | **N2** | 「强化护盾」/「雷法姆变身」的加值不生效（需与 N10 同开） | ember |
@@ -59,9 +59,11 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | **I5** | 玩家端攻击卡只写「DC」，看不到打的是哪条防御（类型本是公开信息） | crucible |
 | **I6** | 「可视化夹击」叠层换选后成孤儿，关不掉、只能刷新页面 | crucible |
 | **B5** | 侧栏「精选装备」最多只列得出 1 件天生武器（**回搬自上游开发版**） | crucible |
+| **N12** | 物品自带效果同样踩 N10，但不经过动作 —— 例如「Nearing Death」持有即应生效却永远建不出来 | ember 数据 × crucible 校验 |
 
-> **状态**：全部 30 条只有静态取证 + 201 条离线断言（另有 55/55 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
-> 逐条的验证方法见 `HANDOFF.md` §3 —— 那张表按**设置键名**列出全部 30 个开关，可机械核对覆盖率。
+> **状态**：31 条补丁，静态取证 + 220 条离线断言（另有变异测试证明断言真的会红）。
+> 其中 **N10 已由用户实测确认**（「顽强体力」用了没效果，症状与诊断完全一致），其余仍只有静态取证。
+> 逐条的验证方法见 `HANDOFF.md` §3 —— 那张表按**设置键名**列出全部开关，可机械核对覆盖率。
 
 ---
 
@@ -187,7 +189,42 @@ this.usage.resource = lastAction.damage?.resource ?? "health";
 **九个血统的招牌变身全部中招** —— Altyra 雷法姆变身、Cor'ak 结晶创伤、Fej 极限代谢、
 Hulg'run 活石、Kivahr 律动、Thornling 荆棘皮、Vrjnhar 顽强、Wirrun 不懈猎手、Zeph 三张面具；
 外加 abyssalWhispers / bewilderingGaze / frenziedClaws / searingStare / sentinelShielding 等敌手动作。
-本机数据实测 **19 个动作 / 20 条效果**，冒险包里还有重复副本。
+
+本机 crucible + ember 全部 packs 深扫，按不同动作 id 去重共 **38 个**：
+
+| 来源 | 个数 | 例 |
+|---|---|---|
+| ember 血统 / 敌手 / 消耗品 | 32 | 九个血统的招牌能力；`alchemicalGrenade`、`frostFlask`、`electroAmpoule`、`cosmicGem`×3 |
+| **crucible 自身** | 7 | `devourThoughts`、`mindFlay`、`eldritchEmanation`、`ferociousHowl`、`pestilentLash`、`shieldBash`、`steamVent` |
+
+（`steamVent` 两侧都有，所以分项和大于 38。）crucible 自己也踩，说明这不只是
+「ember 数据配 crucible 校验」的接缝问题。
+
+> ⚠ **订正**：早先版本这里写的是「19 个动作 / 20 条效果，冒险包里还有重复副本」，是漏数。
+> 漏了两类：已经迁成 `units:"turns"` 新形的（`shieldBash`、`steamVent`），
+> 以及冒险 / 预生成包里 **actor 内嵌物品**上的那些 —— 它们不是「重复副本」，
+> 而是玩家真会拖上桌用的独立实例。
+
+另有 **22 个**同样坏掉的效果直接写在**物品文档**自己的 `effects[]` 上（例如 Mythspire Guardian
+的「Nearing Death」，`transfer:true`，持有即应生效却永远建不出来）。它们的创建不经过动作，
+`preActivate` 够不着 —— 由 **N12** 在效果创建那一层补，与 N10 共用 `patchTurnsDuration` 开关。
+
+### N12 · 为什么不能用 `preCreateActiveEffect` 钩子
+
+直觉的修法是挂一个 `preCreateActiveEffect` 钩子把单位改掉。**这条路是死的**，
+原因在核心的创建流程（`foundry.mjs:80806-80808`）：
+
+```js
+let documentAllowed = await doc._preCreate(createData, options, user) ?? true;
+documentAllowed &&= (noHook || Hooks.call(`preCreate${type}`, doc, createData, options, user.id));
+```
+
+`_preCreate` **先**跑，crucible 的拒绝就在它里面；而 `&&=` 在左边已经是 `false` 时
+**根本不会调用**右边的钩子 —— 钩子写了也不会被触发。
+所以 N12 走 `PROTOTYPE_PATCHES`，包住 `CrucibleActiveEffect#_preCreate`，
+在 `:39581` 那道拦截读 `this.duration.units` **之前** `updateSource` 改掉单位。
+
+`months` 不放行 —— 本机数据里 `months` 用法为 0 条，没有需要解释的数据，就不动上游的判断。
 
 **根因**：数据里写的是 v12 时代的 `{turns: N}`。核心的 `#migrateDuration`（foundry.mjs:15931）
 把它迁成 `{value: N, units: "turns"}` —— **迁移本身是成功的**。然后撞上 `CrucibleActiveEffect._preCreate`（`:39581`）：
