@@ -966,13 +966,34 @@ PROTOTYPE_PATCHES.push({
   method: "_prepareContext",
   wrap: (orig, setting) => async function _prepareContext(...args) {
     const context = await orig.apply(this, args);
-    if ( !settingOn(setting) ) return context;
-    const bio = context?.biography;
-    if ( bio && !this.document?.isOwner ) {
-      bio.privateSrc = "";
-      bio.privateHTML = "";
-      bio.privateField = null;
-      bio.privateClass = "private-biography empty";
+
+    // I3：非拥有者不该看到私密传记
+    if ( settingOn(setting) ) {
+      const bio = context?.biography;
+      if ( bio && !this.document?.isOwner ) {
+        bio.privateSrc = "";
+        bio.privateHTML = "";
+        bio.privateField = null;
+        bio.privateClass = "private-biography empty";
+      }
+    }
+
+    // B5（上游 ac1b5cfc）：侧栏「精选装备」的天生武器循环上界写成 `i < 3 - featuredEquipment.length`，
+    // 而每 push 一件上界就缩一格 —— 多爪多牙的怪物最多只列得出 1 件天生武器。
+    // 纯显示层：动作列表里那些打击照常在，命中与伤害不受影响。
+    // 这里在上游填完之后**补齐到 3 件**，顺序与上游一致（主手 → 副手 → 天生）。
+    if ( settingOn("patchFeaturedEquipment") ) {
+      const fe = context?.featuredEquipment;
+      const natural = this.document?.equipment?.weapons?.natural;
+      if ( Array.isArray(fe) && Array.isArray(natural) && (fe.length < 3) ) {
+        const listed = new Set(fe.map(e => e.uuid));
+        for ( const n of natural ) {
+          if ( fe.length >= 3 ) break;
+          if ( listed.has(n.uuid) ) continue;
+          const tags = n.getTags?.("short") ?? {};
+          fe.push({ name: n.name, type: n.type, uuid: n.uuid, img: n.img, tags: [tags.damage, tags.range] });
+        }
+      }
     }
     return context;
   }
@@ -1151,6 +1172,84 @@ for ( const a of EFFECT_ID_ALIGNMENTS ) {
       effect._id = a.effectId;
     }
   };
+}
+
+/**
+ * I5（上游 issue **#1402**）：**玩家端的攻击卡只写 "DC"，看不到打的是哪条防御。**
+ *
+ * `AttackRoll#_prepareChatRenderContext`（`:3311`）其实**给所有人**都算好了防御名：
+ *
+ *   if ( defense ) cardData.defenseType = defense.shortLabel ?? defense.label;
+ *   …
+ *   if ( game.user.isGM ) cardData.targetLabel = `${cardData.defenseType} ${cardData.dc}`;
+ *
+ * 但模板渲染的是 `{{targetLabel}}`（`templates/dice/standard-check-chat.hbs:13`），
+ * 而那一行**只给 GM 赋值** —— 非 GM 于是看不到防御类型。
+ *
+ * **防御类型本来就是公开信息**（条目描述里白纸黑字写着「攻击其反射」），
+ * 该藏的只有 DC 数值。现在连类型一起被抹掉，纯属实现疏漏。
+ *
+ * 修法：非 GM 时把 `targetLabel` 补成**只有类型、不带数字**的形式 —— DC 仍然藏着。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "AttackRoll#_prepareChatRenderContext（I5 玩家端看不到防御类型）",
+  setting: "patchDefenseTypeLabel",
+  resolve: () => globalThis.crucible?.api?.dice?.AttackRoll,
+  method: "_prepareChatRenderContext",
+  guard: { method: "_prepareChatRenderContext", includes: "game.user.isGM" },
+  wrap: (orig, setting) => async function _prepareChatRenderContext(...args) {
+    const cardData = await orig.apply(this, args);
+    if ( !settingOn(setting) ) return cardData;
+    // 只在「上游没给赋值」时补，且只补类型 —— 绝不把 DC 泄漏给玩家
+    if ( cardData && !cardData.targetLabel && cardData.defenseType ) {
+      cardData.targetLabel = cardData.defenseType;
+    }
+    return cardData;
+  }
+});
+
+/**
+ * I6（上游 issue **#1311**）：**「可视化夹击」的叠层关不掉。**
+ *
+ * 工具的 `onChange`（`:47965`）只遍历 `canvas.tokens.controlled`：
+ *
+ *   for ( const token of globalThis.canvas.tokens.controlled ) {
+ *     if ( active ) token._visualizeEngagement(token.engagement);
+ *     else token._clearEngagementVisualization();
+ *   }
+ *
+ * 于是换选之后，上一个 token 的多边形与方框就成了**孤儿** —— 钉死在画布上、不跟着任何东西动；
+ * 再点一次开关也清不掉它（因为它已经不在 controlled 里了）。唯一解法是刷新页面。
+ *
+ * 修法：关闭时清**全部** token 而不只是选中的。这条不走 `PROTOTYPE_PATCHES` ——
+ * 工具对象是在 `getSceneControlButtons` 钩子里现造的，包原型没用，得在同一个钩子里改它。
+ */
+function installFlankingToggleFix() {
+  Hooks.on("getSceneControlButtons", controls => {
+    let on = true;
+    try { on = game.settings.get(MODULE_ID, "patchFlankingToggle"); } catch { /* 尚未注册 */ }
+    if ( !on ) return;
+    const tool = controls?.tokens?.tools?.debugFlanking;
+    const orig = tool?.onChange;
+    if ( !(orig instanceof Function) || orig.__tempfixPatched ) return;
+    // 闸门：上游那句「只遍历 controlled」还在吗
+    if ( !String(orig).includes("canvas.tokens.controlled") ) return;
+
+    const patched = (event, active) => {
+      const r = orig(event, active);
+      if ( !active ) {
+        // 上游只清了 controlled，把剩下的孤儿一并清掉
+        for ( const token of globalThis.canvas?.tokens?.placeables ?? [] ) {
+          try { token._clearEngagementVisualization?.(); } catch { /* 忽略单个 token 的失败 */ }
+        }
+      }
+      return r;
+    };
+    patched.__tempfixPatched = true;
+    patched.__tempfixOriginal = orig;
+    tool.onChange = patched;
+  });
+  return true;
 }
 
 /* -------------------------------------------- */
@@ -1668,6 +1767,12 @@ Hooks.once("init", () => {
     "位移类动作在规划路径后会第二次准备，而系统只重置了消耗、没重置加成——带「强化」标签的动作（如飞踢）伤害会<strong>比条目描述多 6 点</strong>；路径被判非法需要重新规划时会变成多 18 点。开启后每次准备前把加成恢复成原始态。");
   bool("patchResistanceChangeKey", "E1 修正「稳定护佑」把酸性抗性算成 NaN",
     "该效果的加值写在了抗性对象本身而不是它的 bonus 字段上，导致派生出来的酸性抗性变成 NaN，此后每次酸性伤害结算都带着 NaN 传播。开启后自动补上正确的字段路径。");
+  bool("patchDefenseTypeLabel", "I5 让玩家也看得到攻击打的是哪条防御（上游 issue #1402）",
+    "攻击聊天卡上的目标栏，GM 端显示「反射 12」而玩家端只有「DC」——防御类型本来是公开信息（条目描述里就写着），该藏的只有数值。开启后玩家端补上类型，<strong>仍然不显示 DC 数字</strong>。");
+  bool("patchFlankingToggle", "I6 修好「可视化夹击」叠层关不掉（上游 issue #1311）",
+    "关闭该调试叠层时系统只清理当前选中的 token，换选之后旧图形就钉死在画布上，再点开关也清不掉，只能刷新页面。开启后关闭时清理全部 token。仅 GM 可见。");
+  bool("patchFeaturedEquipment", "B5 修好侧栏「精选装备」只列得出 1 件天生武器（上游 ac1b5cfc）",
+    "天生武器的循环上界写成「3 减去已列数量」，而每加一件上界就缩一格，导致多爪多牙的怪物最多只列出 1 件。纯显示层：动作列表里那些打击照常在，命中与伤害不受影响。上游已在开发版修好（尚未发布）。");
   bool("patchEnchantmentBonus", "B1/B2 回搬：词缀推导的附魔加值不生效（上游 bea623d8）",
     "附魔加值在数据准备的<strong>太早</strong>阶段就被算死，而词缀要到派生阶段才解析完——给武器加词缀后攻击掷骰里没有附魔加值、给护甲加词缀后闪避防御不涨，手动把附魔等级改成同一档反而就好了。上游已在开发版修好（尚未发布），本项把它回搬。");
   bool("patchCurrencyPopout", "B3 回搬：角色卡弹成独立窗口后货币归零（上游 1659465a）",
@@ -1729,6 +1834,7 @@ Hooks.once("ready", async () => {
   installActorHookPatch();
   installAffixTrainingFix();
   installPrototypePatches();
+  installFlankingToggleFix();
   installHookOverrides();
 
   await loadCantripSources();
@@ -1745,6 +1851,7 @@ Hooks.once("ready", async () => {
     reprepareActors,
     installAffixTrainingFix,
     installPrototypePatches,
+    installFlankingToggleFix,
     PROTOTYPE_PATCHES,
     /** 让 N10 的上游 guard 重新检测一次（测试用；正常运行时缓存一次即可） */
     resetTurnsGuard() { _rejectsTurns = null; },
