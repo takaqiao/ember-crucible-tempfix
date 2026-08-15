@@ -47,8 +47,16 @@ globalThis.game = {
   i18n: { format: (k, d) => `${k}:${JSON.stringify(d)}` },
   settings: {
     register(mod, key, cfg) { const k = `${mod}.${key}`; settingDefs.set(k, cfg); settings.set(k, cfg.default); },
-    // registerMenu 只在拿得到 ApplicationV2 时才被调用；桩件里记下来供断言核对
-    registerMenu(mod, key, data) { registeredMenus.push({ key: `${mod}.${key}`, ...data }); },
+    // registerMenu 只在拿得到 ApplicationV2 时才被调用；桩件里记下来供断言核对。
+    // ⚠ 真实 Foundry 是 `this.menus.set(\`${namespace}.${key}\`, data)`（foundry.mjs:203510），
+    //   `menus` 是个 **Map** —— 代码里靠 `game.settings.menus.has(...)` 判断面板注册没有。
+    //   桩件只记数组的话那条判据永远读不到东西，断言会假红（这次就是）。
+    menus: new Map(),
+    registerMenu(mod, key, data) {
+      const k = `${mod}.${key}`;
+      registeredMenus.push({ key: k, ...data });
+      this.menus.set(k, { ...data, key: k, namespace: mod });
+    },
     set(mod, key, value) { setSetting(`${mod}.${key}`, value); return Promise.resolve(value); },
     get(mod, key) {
       const k = `${mod}.${key}`;
@@ -101,7 +109,21 @@ const isNewerVersion = (v1, v0) => {
 globalThis.foundry = {
   utils: { deepClone: o => JSON.parse(JSON.stringify(o)), setProperty, isNewerVersion },
   // T1：crucible 的角色卡全是 ApplicationV2，只活在这里
-  applications: { instances: new Map([["a", { document: { documentName: "Actor" }, render() { renderCount++; } }]]) }
+  applications: {
+    instances: new Map([["a", { document: { documentName: "Actor" }, render() { renderCount++; } }]]),
+    /**
+     * 控制面板要 `extends` 它。桩件必须**存在**，否则 `getToolboxClass()` 直接返回 null，
+     * 整条面板类定义的路径一次都跑不到 —— 0.7.0 就是这么漏测的：
+     * 面板 HTML 有断言，而「类能不能建起来、菜单有没有注册上」一条都没有。
+     */
+    api: {
+      ApplicationV2: class ApplicationV2 {
+        static DEFAULT_OPTIONS = { id: "app", classes: [], actions: {} };
+        constructor(options = {}) { this.options = options; }
+        render() { this.rendered = true; return this; }
+      }
+    }
+  }
 };
 globalThis.canvas = { tokens: { controlled: [], placeables: [] } };
 globalThis.performance = globalThis.performance ?? { now: () => 0 };
@@ -493,7 +515,7 @@ globalThis.CONFIG = {
  * 复刻上游那个 bug：`this` 是 **CrucibleActor 文档**（callActorHooks :36578 `fn.call(this, item, ...)`），
  * 而文档上**没有** `training` getter（全 23 个 getter 里没这一项），于是 `this.training[runeId]` 抛 TypeError。
  * `prepareGrimoire` 的 hook 配置没有 `throws`（:1168），所以异常被 catch 成 console.error ——
- * 结果是 runeIds 推进去了、训练等级没设上：**拿到符文但按未受训 −4 算**。
+ * 结果是 runeIds 推进去了、训练阶位没设上：**拿到符文但按未受训 −4 算**。
  */
 const HOOKS_AFFIX = {};
 for (const runeId of ["storm", "flame", "death"]) {
@@ -566,7 +588,7 @@ const check = (label, cond, extra = "") => {
 };
 const throws = fn => { try { fn(); return null; } catch (e) { return e; } };
 
-console.log("\nP1 副手打击");
+console.log("\nP1 副手攻击");
 {
   const mh = { id: "w1", name: "剑", system: { slot: SLOTS.MAINHAND }, toObject: () => ({ system: { slot: SLOTS.EITHER } }) };
   const oh = { id: "w2", name: "匕首", system: { slot: SLOTS.OFFHAND } };
@@ -574,7 +596,7 @@ console.log("\nP1 副手打击");
   actor.itemList = { get: id => [mh, oh].find(i => i.id === id) ?? null, [Symbol.iterator]: function* () { yield mh; yield oh; } };
 
   actor.lastConfirmedAction = { events: [{ type: "strike", weapon: { _id: "w1", system: { slot: SLOTS.EITHER } } }] };
-  const a = new CrucibleAction({ id: "offhandStrike", name: "副手打击" }, { actor });
+  const a = new CrucibleAction({ id: "offhandStrike", name: "副手攻击" }, { actor });
   check("存盘 slot=EITHER 但武器正握在主手 → 放行", throws(() => a.canUse()) === null);
 
   actor.lastConfirmedAction = { events: [{ type: "strike", weapon: { _id: "w2", system: { slot: SLOTS.OFFHAND } } }] };
@@ -637,7 +659,7 @@ console.log("\nN8 徒手 / 临时武器的手位");
   check("有 _id 的真武器一律不碰", updateSourceCalls === 0 && real.system._source.slot === SLOTS.EITHER);
 }
 
-console.log("\nP2 撕咬范围");
+console.log("\nP2 猝然撕咬范围");
 {
   const actor = new CrucibleActor("B");
   const a = new CrucibleAction({ id: "suddenBite", range: { minimum: 2, maximum: 2 }, target: { type: "single" } }, { actor });
@@ -691,7 +713,7 @@ console.log("\nP4 疗愈导流（重写后）");
   check("ember 未注册钩子 → 不抛错", throws(() => orphan.canUse()) === null);
 }
 
-console.log("\nN1 湮灭之印的效果 ID");
+console.log("\nN1 湮解印记的效果 ID");
 {
   const actor = new CrucibleActor("N1");
   const victim = new CrucibleActor("Victim");
@@ -700,7 +722,7 @@ console.log("\nN1 湮灭之印的效果 ID");
   prior.effects.has = prior.effects.has.bind(prior.effects);
   actor.flags.ember.abyssMarkTarget = prior.uuid;
 
-  const a = new CrucibleAction({ id: "abyssMarkUnmaking", effects: [{ name: "湮灭之印" }] }, { actor });
+  const a = new CrucibleAction({ id: "abyssMarkUnmaking", effects: [{ name: "湮解印记" }] }, { actor });
   a.targets.set("t", { actor: victim });
   a.preActivate();
   check("效果 ID 是合法的 16 字符", /^[a-zA-Z0-9]{16}$/.test(a.effects[0]._id), a.effects[0]._id);
@@ -735,7 +757,7 @@ console.log("\nN2 效果 changes 的层级");
   check("上游改了 schema（无 system）→ 静默跳过", throws(() => noSystem.preActivate()) === null);
 }
 
-console.log("\nN3 排斥踢的踉跄时长");
+console.log("\nN3 斥退踢击的踉跄时长");
 {
   const actor = new CrucibleActor("N3");
   const a = new CrucibleAction({ id: "sentinelKick", effects: [{ statuses: ["staggered"], duration: { value: 1, units: "", expiry: null } }] }, { actor });
@@ -754,7 +776,7 @@ console.log("\nN3 排斥踢的踉跄时长");
   check("合法的「无时限」写法 → 不动", perm.effects[0].duration.units === "");
 }
 
-console.log("\nN4 余烬之火的作用域");
+console.log("\nN4 余烬之火花的作用域");
 {
   const actor = new CrucibleActor("N4");
   const a = new CrucibleAction({ id: "heartSparkOfEmber", target: { type: "single", scope: TARGET_SCOPES.ENEMIES } }, { actor });
@@ -768,7 +790,7 @@ console.log("\nN4 余烬之火的作用域");
   check("同天赋的 heartHallow（减益）不受影响", hallow.target.scope === TARGET_SCOPES.ENEMIES);
 }
 
-console.log("\nN5 迷乱凝视的防御标签");
+console.log("\nN5 惑乱凝视的防御标签");
 {
   const actor = new CrucibleActor("N5");
   const a = new CrucibleAction({ id: "bewilderingGaze", tags: ["generic", "void", "presence", "morale"] }, { actor });
@@ -799,7 +821,7 @@ console.log("\nN6 反重力石的目标类型");
   check("上游改成 self:true → 不动", fixed.target.type === "single");
 }
 
-console.log("\nN7 暗焰头冠的 composed 标签");
+console.log("\nN7 暗焰光束的 composed 标签");
 {
   const actor = new CrucibleActor("N7");
   const a = new CrucibleAction({ id: "darkflameCirclet", tags: ["composed", "corruption"] }, { actor });
@@ -813,7 +835,7 @@ console.log("\nN7 暗焰头冠的 composed 标签");
   check("只按 id 命中：别的 composed 动作不被碰", spell.tags.has("composed"));
 }
 
-console.log("\nP3 / N9 符文小戏法与训练等级");
+console.log("\nP3 / N9 符文戏法与训练阶位");
 {
   const talent = (id, rune, training = { type: "", rank: null }, actions = []) =>
     ({ id, type: "talent", name: id, system: { rune, training, actions } });
@@ -830,12 +852,12 @@ console.log("\nP3 / N9 符文小戏法与训练等级");
   actor.prepareData();
   check("重复准备不会重复注入", Object.keys(actor.system.actions).length === before);
 
-  // N9：按 rune 查表，所以小写 id 的旧快照同样命中，并补上训练等级
+  // N9：按 rune 查表，所以小写 id 的旧快照同样命中，并补上训练阶位
   const stale = talent("runeflame0000000", "flame");
   const summon = new CrucibleActor("Summon", [stale]);
   summon.prepareData();
   check("旧快照（小写 id）也被命中 → enkindle", !!summon.system.actions.enkindle);
-  check("补上了训练等级 flame = 1", summon.system.training.flame === 1, JSON.stringify(summon.system.training));
+  check("补上了训练阶位 flame = 1", summon.system.training.flame === 1, JSON.stringify(summon.system.training));
 
   const frost = new CrucibleActor("Frost", [talent("runefrost0000000", "frost")]);
   frost.prepareData();
@@ -844,13 +866,13 @@ console.log("\nP3 / N9 符文小戏法与训练等级");
   const trained = new CrucibleActor("Trained", [talent("x", "illumination", { type: "illumination", rank: 2 })]);
   trained.system.training.illumination = 2;
   trained.prepareData();
-  check("上游已填训练等级 → 整条跳过", trained.system.training.illumination === 2);
+  check("上游已填训练阶位 → 整条跳过", trained.system.training.illumination === 2);
 
-  // 旧快照（training.type 为空，会走到赋值那一行）但角色已从别处拿到更高等级 —— 不能被压回 1
+  // 旧快照（training.type 为空，会走到赋值那一行）但角色已从别处拿到更高阶位 —— 不能被压回 1
   const higher = new CrucibleActor("Higher", [talent("runeStorm0000000", "storm")]);
   higher.system.training.storm = 3;
   higher.prepareData();
-  check("旧快照 + 已有更高等级 → 取 max 不降级", higher.system.training.storm === 3, String(higher.system.training.storm));
+  check("旧快照 + 已有更高阶位 → 取 max 不降级", higher.system.training.storm === 3, String(higher.system.training.storm));
 
   const own = new CrucibleActor("Own", [talent("runeStorm0000000", "storm", { type: "storm", rank: 1 }, [{ id: "energize" }])]);
   own.prepareData();
@@ -1044,7 +1066,7 @@ console.log("\nI7：投掷武器的下拉框只列扔得出去的武器（上游
     both.getValidWeaponChoices().map(c => c.id).join(","));
 }
 
-console.log("\nN11 符文 Spellcraft 词缀的训练等级");
+console.log("\nN11 符文 Spellcraft 词缀的训练阶位");
 {
   // 复刻真实调用：this 绑定 actor **文档**（文档上没有 training getter）
   const actor = new CrucibleActor("N11");
@@ -1053,17 +1075,17 @@ console.log("\nN11 符文 Spellcraft 词缀的训练等级");
   const g = { runeIds: [] };
   check("补丁装上后不再抛 TypeError", throws(() => call("stormSpellcraft", g)) === null);
   check("符文仍然被授予", g.runeIds.includes("storm"));
-  check("训练等级这次真的设上了", actor.system.training.storm === 1, JSON.stringify(actor.system.training));
+  check("训练阶位这次真的设上了", actor.system.training.storm === 1, JSON.stringify(actor.system.training));
 
   const g2 = { runeIds: [] };
   call("flameSpellcraft", g2);
   call("deathSpellcraft", g2);
   check("12 个符文词缀是同一族，全部被覆盖", actor.system.training.flame === 1 && actor.system.training.death === 1);
 
-  // 反向：已有更高等级不降级
+  // 反向：已有更高阶位不降级
   actor.system.training.storm = 3;
   call("stormSpellcraft", { runeIds: [] });
-  check("已有更高等级 → 取 max 不降级", actor.system.training.storm === 3, String(actor.system.training.storm));
+  check("已有更高阶位 → 取 max 不降级", actor.system.training.storm === 3, String(actor.system.training.storm));
 
   // 反向：不碰 training 的词缀钩子不被替换
   check("不碰 training 的词缀钩子原样保留", !HOOKS_AFFIX.returning.prepareGrimoire.__tempfixOverride);
@@ -1089,7 +1111,7 @@ console.log("\nC 系列：crucible 自身的缺陷");
 {
   const actor = new CrucibleActor("C");
 
-  // C4 翻滚穿越：scope ALLIES → ENEMIES，且**不能**顶掉 crucible 自己的 tumble.prepare
+  // C4 翻滚：scope ALLIES → ENEMIES，且**不能**顶掉 crucible 自己的 tumble.prepare
   const tumble = new CrucibleAction({ id: "tumble", target: { type: "single", scope: TARGET_SCOPES.ALLIES } }, { actor });
   tumble.prepare();
   check("C4 ALLIES → ENEMIES", tumble.target.scope === TARGET_SCOPES.ENEMIES, String(tumble.target.scope));
@@ -1099,7 +1121,7 @@ console.log("\nC 系列：crucible 自身的缺陷");
   tumbleFixed.prepare();
   check("C4 上游改好后不再插手（幂等）", tumbleFixed.target.scope === TARGET_SCOPES.ENEMIES);
 
-  // C5 黎明信标：pulse + SELF → ENEMIES
+  // C5 曙光信标：pulse + SELF → ENEMIES
   const beacon = new CrucibleAction({ id: "dawnBeacon", target: { type: "pulse", scope: TARGET_SCOPES.SELF, size: 60 } }, { actor });
   beacon.prepare();
   check("C5 pulse+SELF → ENEMIES", beacon.target.scope === TARGET_SCOPES.ENEMIES, String(beacon.target.scope));
@@ -1120,11 +1142,11 @@ console.log("\nC 系列：crucible 自身的缺陷");
   already.prepare();
   check("X1 上游已有别的 roll 提供者（spell）→ 不再加 generic", (already.tags.size === n0) && !already.tags.has("generic"));
 
-  // C1 吞噬的效果 ID（常量改写，可逆）
+  // C1 吞下的效果 ID（常量改写，可逆）
   const sw = crucible.api.hooks.action.swallow;
   check("C1 常量已换成合法的 16 字符", /^[a-zA-Z0-9]{16}$/.test(sw._SWALLOWED_EFFECT_ID), sw._SWALLOWED_EFFECT_ID);
   // ⚠ 关掉开关**故意不还原**成坏值：还原会让本次会话里已经被吞下去的目标再也放不出来
-  //   （「反刍」按坏 id 查、查不到 → token 保持 hidden）。而坏值本来就是非法的，
+  //   （「反吐」按坏 id 查、查不到 → token 保持 hidden）。而坏值本来就是非法的，
   //   留着合法 id 不造成任何伤害。要回到上游原样就停用模块并刷新。
   setSetting("ember-crucible-tempfix.patchSwallowEffectId", false);
   check("C1 关掉开关不还原坏值（否则已吞的目标会被锁死）", sw._SWALLOWED_EFFECT_ID === "swallowed0000000", sw._SWALLOWED_EFFECT_ID);
@@ -1154,7 +1176,7 @@ console.log("\nI 系列：上游还没修的开放 issue");
 {
   const actor = new CrucibleActor("I");
 
-  // I1 #1403：strikes 为空数组时 every() 真空通过 → 动作可用但什么都不做，还退还行动点
+  // I1 #1403：strikes 为空数组时 every() 真空通过 → 动作可用但什么都不做，还退还动作点
   const empty = new CrucibleAction({ id: "wildStrike", tags: ["natural"] }, { actor });
   empty.usage.strikes = [];
   check("I1 没有天生武器 → 拦住", throws(() => empty.canUse()) !== null);
@@ -1188,7 +1210,7 @@ console.log("\nI 系列：上游还没修的开放 issue");
   noAgg.system.details = { background: { knowledge: new Set(["fey"]) } };   // 没有聚合值
   check("I2 读不到聚合值 → 退回上游行为", noAgg.hasKnowledge("fey") === true);
 
-  // I3 #1406：私密传记无条件渲染给所有能打开卡的人
+  // I3 #1406：私人传记无条件渲染给所有能打开卡的人
   const sheetCls = crucible.api.applications.CrucibleBaseActorSheet;
   const asOwner = new sheetCls({ isOwner: true });
   const asViewer = new sheetCls({ isOwner: false });
@@ -1199,7 +1221,7 @@ console.log("\nI 系列：上游还没修的开放 issue");
   check("I3 公开传记不受影响", view.biography.publicHTML === "<p>公开</p>");
 }
 
-console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 精选装备");
+console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 当前装备");
 {
   // I5 #1402：defenseType 人人都算了，但 targetLabel 只给 GM 赋值
   const roll = new AttackRollStub();
@@ -1259,13 +1281,13 @@ console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 精选装备")
   check("B5 护甲仍在最后一格", ctx2.featuredEquipment.at(-1).type === "armor", ctx2.featuredEquipment.at(-1)?.type);
 }
 
-console.log("\n实测回归：强健体力（Vrjnhar 血裔）—— 用户在真实牌桌上报的第一条");
+console.log("\n实测回归：强健体力（弗尔金哈尔血统 Vrjnhar Lineage）—— 用户在真实牌桌上报的第一条");
 {
   // 用户报告：「强健体力用了以后不加效果」。取证结论 = N10。
   // 本机两份数据的真实形态（两份都要过）：
   //   ember.crucible-character   → duration: {turns: 6}                              （旧形态，加载时迁移）
   //   ember.crucible-adventure   → duration: {value: 6, units: "turns", expiry: null}（已迁移形态）
-  // 消耗是 {action: 0, focus: 1, heroism: 1} —— 花掉 1 专注 + 1 英雄点，什么都拿不到。
+  // 消耗是 {action: 0, focus: 1, heroism: 1} —— 花掉 1 专注 + 1 点英雄气概，什么都拿不到。
   const actor = new CrucibleActor("Svala");
 
   for ( const [label, duration] of [
@@ -1690,6 +1712,82 @@ console.log("\n控制面板与命令表");
     withOut.includes("&lt;img") && !withOut.includes("<img src=x"));
   check("面板输出区把失败也显示出来",
     T.__renderToolbox({ ok: false, label: "自检", text: "boom" }).includes("⚠"));
+
+  // ⚠ 这一组盯的是 0.7.0 漏测的那条缝：面板 HTML 有断言，而**类能不能建起来**、
+  //   **菜单有没有真的注册上**一条都没有。用户报「看不到控制面板」时，
+  //   我没有任何一条断言能回答「面板到底注册了没」。
+  check("面板类建得起来（ApplicationV2 在场时不返回 null）", !!T.__getToolboxClass());
+  check("面板类是 ApplicationV2 的子类",
+    T.__getToolboxClass()?.prototype instanceof foundry.applications.api.ApplicationV2);
+  check("面板类缓存住了（不是每次重建）", T.__getToolboxClass() === T.__getToolboxClass());
+  check("面板类把两个动作都挂上了",
+    !!T.__getToolboxClass()?.DEFAULT_OPTIONS?.actions?.run &&
+    !!T.__getToolboxClass()?.DEFAULT_OPTIONS?.actions?.toggle);
+  check("能实例化并 render（点开面板这一步）", (() => {
+    try { return new (T.__getToolboxClass())().render({ force: true })?.rendered === true; }
+    catch { return false; }
+  })());
+
+  // 菜单必须真的注册进去了 —— 这是「看不到控制面板」的直接判据
+  check("控制面板菜单已注册", registeredMenus.some(m => m.key === "ember-crucible-tempfix.toolbox"),
+    registeredMenus.map(m => m.key).join(",") || "（一个菜单都没注册）");
+  const menu = registeredMenus.find(m => m.key === "ember-crucible-tempfix.toolbox");
+  check("菜单的 type 就是面板类", menu?.type === T.__getToolboxClass());
+  check("菜单限定 GM", menu?.restricted === true);
+
+  // 注册数：设置全注册完之后菜单才注册。init 中途抛的话这两个数都会掉，
+  // 而现实里的症状正是「只剩十几条设置 + 没有面板」。
+  check("init 一路跑到底（31 项开关 + 1 个下拉 + 1 个菜单）",
+    regd.size === 31 && registeredMenus.length === 1,
+    `开关 ${regd.size} / 菜单 ${registeredMenus.length}`);
+  check("下拉框在菜单之前注册（面板塌了也带不走它）",
+    game.settings.settings?.has?.("ember-crucible-tempfix.redirectResource") !== false);
+
+  /**
+   * 面板注册的**失败路径**。这一组是用户报「看不到控制面板」逼出来的：
+   * 面板本来夹在 bool() 与 redirectResource 之间且裸调 getToolboxClass()，
+   * 它一抛就把 registerMenu + redirectResource + applyToggles 全带走，
+   * 而症状只是「面板和下拉框不见了」，完全看不出 init 半途死了。
+   */
+  {
+    const realAPI = foundry.applications.api;
+
+    // ① ApplicationV2 缺席（init 阶段还没就位）→ 不抛，只是这次没注册上
+    T.__resetToolboxClass();
+    game.settings.menus.delete("ember-crucible-tempfix.toolbox");
+    foundry.applications.api = undefined;
+    let threw = false;
+    let got;
+    try { got = T.__registerToolboxMenu(); } catch { threw = true; }
+    check("ApplicationV2 缺席 → 不抛", !threw);
+    check("ApplicationV2 缺席 → 报告未注册", got === false, String(got));
+
+    // ② 下一个阶段 ApplicationV2 就位 → 重试能补上（这就是 setup/ready 各试一次的意义）
+    foundry.applications.api = realAPI;
+    T.__resetToolboxClass();
+    check("下个阶段重试 → 菜单补注册成功", T.__registerToolboxMenu() === true);
+    check("重试后菜单确实进了 menus", game.settings.menus.has("ember-crucible-tempfix.toolbox"));
+
+    // ③ 幂等：已经注册过就直接返回 true，不重复注册
+    const before = registeredMenus.length;
+    check("已注册 → 幂等返回 true", T.__registerToolboxMenu() === true);
+    check("已注册 → 不重复注册", registeredMenus.length === before, `${before} → ${registeredMenus.length}`);
+
+    // ④ 类构造抛异常 → 吞掉并报告，绝不外泄到 init
+    T.__resetToolboxClass();
+    game.settings.menus.delete("ember-crucible-tempfix.toolbox");
+    foundry.applications.api = { get ApplicationV2() { throw new Error("模拟：类不可用"); } };
+    let threw2 = false, got2;
+    try { got2 = T.__registerToolboxMenu(); } catch { threw2 = true; }
+    check("面板类抛异常 → 不外泄到 init", !threw2);
+    check("面板类抛异常 → 报告未注册", got2 === false, String(got2));
+
+    // 还原
+    foundry.applications.api = realAPI;
+    T.__resetToolboxClass();
+    T.__registerToolboxMenu();
+    check("收尾：菜单恢复注册", game.settings.menus.has("ember-crucible-tempfix.toolbox"));
+  }
 }
 
 console.log("\nT1 角色卡刷新");
@@ -1734,6 +1832,15 @@ console.log("\n开关");
 
   check("桩件会拒绝未注册的标签", rejectedTags === 0, `拒绝了 ${rejectedTags} 个 —— 说明补丁里有拼错的标签名`);
   check("暴露了 diagnose", typeof globalThis.emberCrucibleTempFix.diagnose === "function");
+  // 报 bug 时贴的就是 diagnose 的输出。「在跑哪一版」是第一个要问的问题 ——
+  // 用户报「看不到控制面板」时真实原因就是在跑 0.2.2，而当时输出里根本没有版本号。
+  {
+    const d = globalThis.emberCrucibleTempFix.diagnose();
+    check("diagnose 带上了模块版本", !!d.version && d.version !== "?", String(d.version));
+    check("diagnose 带上了系统版本", !!d.system, String(d.system));
+    check("diagnose 报出开关数", d.settingsRegistered === 31, String(d.settingsRegistered));
+    check("diagnose 报出面板注册状态", d.panelRegistered === true, String(d.panelRegistered));
+  }
 }
 
 function ACTIONS() { return globalThis.emberCrucibleTempFix.ACTION_PATCHES; }

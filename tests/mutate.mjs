@@ -38,6 +38,25 @@ const MUTATIONS = [
   ["settingOn 失败方向反了", "  try { on = game.settings.get(MODULE_ID, key); } catch { /* 未注册 → 保守生效 */ }",
                    "  try { on = game.settings.get(MODULE_ID, key); } catch { on = false; }"],
 
+  // ── 控制面板注册的**失败路径**（用户在 VPS 上报「看不到控制面板」逼出来的）
+  ["面板类抛异常时不再兜住（会带走 init）",
+                   "  try { Toolbox = getToolboxClass(); }", "  { Toolbox = getToolboxClass(); }"],
+  ["幂等判据反了（重复注册）", "  if ( toolboxMenuRegistered() ) return true;", "  if ( false ) return true;"],
+  ["ApplicationV2 缺席时谎报成功", "  if ( !Toolbox ) return false;          // ApplicationV2 还没就位，下个阶段再试",
+                   "  if ( !Toolbox ) return true;"],
+
+  // ── 控制面板的注册（用户报「看不到控制面板」暴露出来的漏测）
+  ["面板类工厂恒返回 null（面板注册不上）", "  const AV2 = foundry?.applications?.api?.ApplicationV2;\n  if ( !AV2 ) return null;",
+                   "  const AV2 = foundry?.applications?.api?.ApplicationV2;\n  if ( true ) return null;"],
+  // ⚠ 单独删掉 init / setup / ready 里任何**一个**注册点都测不出来 —— 另外两个会把它补上。
+  //   那正是三处重试的意义（防御性冗余），不是断言没力气。所以这条变异要把注册**整个**掐掉。
+  ["菜单三处注册全部失效", "function registerToolboxMenu() {\n  if ( toolboxMenuRegistered() ) return true;",
+                   "function registerToolboxMenu() {\n  return false;\n  if ( toolboxMenuRegistered() ) return true;"],
+  ["菜单没限定 GM", "      type: Toolbox,\n      restricted: true", "      type: Toolbox,\n      restricted: false"],
+  ["面板类没缓存（每次重建）", "  if ( _ToolboxClass ) return _ToolboxClass;", "  if ( false ) return _ToolboxClass;"],
+  ["面板动作漏挂一个", "        run: TempfixToolbox.#onRun,\n        toggle: TempfixToolbox.#onToggle",
+                   "        run: TempfixToolbox.#onRun"],
+
   // ── 控制面板
   ["面板漏渲染开关（少一组）", 'const groups = Object.entries(SETTING_GROUPS).map(([g, title]) => {',
                    'const groups = Object.entries(SETTING_GROUPS).slice(1).map(([g, title]) => {'],

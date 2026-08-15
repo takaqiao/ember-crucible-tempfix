@@ -20,9 +20,9 @@
  *    （steamVent / lightningBurst / frenziedClaws）。每个钩子体第一行都是判据。
  *
  * ── 补丁清单 ──────────────────────────────────────────────────────────────
- *  P1  offhandStrike        副手打击的前置判据取的是存盘 slot（含 N8：徒手/临时武器手位）
- *  P2  suddenBite           凯思族「撕咬」把锥形的 min=max 写法套到了单体上
- *  P3  rune cantrips        带 rune 的天赋漏了该符文的招牌小戏法（含 N9：训练等级 + summons 合集）
+ *  P1  offhandStrike        副手攻击的前置判据取的是存盘 slot（含 N8：徒手/临时武器手位）
+ *  P2  suddenBite           凯思血统「猝然撕咬」把锥形的 min=max 写法套到了单体上
+ *  P3  rune cantrips        带 rune 的天赋漏了该符文的招牌戏法（含 N9：训练阶位 + summons 合集）
  *  P4  restorativeRedirect  「疗愈导流」恢复的资源种类恒为生命值
  *  N1  abyssMarkUnmaking    硬编码效果 id 只有 15 字符 → 动作抛异常、连聊天卡都不生成
  *  N2  sentinelShielding    changes 写在效果顶层而不是 effect.system 下 → 加值全丢
@@ -73,7 +73,7 @@ const UNIVERSAL_PATCHES = [];
 const warnedGuards = new Set();
 
 /* -------------------------------------------- */
-/*  P1：副手打击 + N8 徒手手位                     */
+/*  P1：副手攻击 + N8 徒手手位                     */
 /* -------------------------------------------- */
 
 /**
@@ -141,7 +141,7 @@ ACTION_PATCHES.offhandStrike = {
  * unarmed 类目允许 EITHER/MAINHAND/OFFHAND，所以 `prepareBaseData`（:45077）的兜底也不触发；
  * `_prepareWeapons` 的 either 桶明确写了 `w.system.slot = MAINHAND/OFFHAND`（:41550/:41555），
  * **紧接着的徒手赋值（:41562/:41565）一个字都不设 slot**。
- * 于是 `strike.roll`（:4131）记下的 snapshot 是 `{_id: null, slot: 0}`，副手打击判据恒假 ——
+ * 于是 `strike.roll`（:4131）记下的 snapshot 是 `{_id: null, slot: 0}`，副手攻击判据恒假 ——
  * 而系统自己在 :41606 明文把全徒手判为双持，Flurry / Dervish 赤手空拳都能用，唯独 Dual Wield 不行。
  *
  * 用 `updateSource` 而不是改派生值：只有 _source 才会进 snapshot。
@@ -163,7 +163,7 @@ function fixTransientWeaponSlots(actor) {
 }
 
 /* -------------------------------------------- */
-/*  P2：凯思族「撕咬」的范围                        */
+/*  P2：凯思血统「猝然撕咬」的范围                  */
 /* -------------------------------------------- */
 
 /**
@@ -263,7 +263,7 @@ function resolveRedirectResource(actor) {
 }
 
 /* -------------------------------------------- */
-/*  N1：深渊「湮灭之印」的非法效果 id               */
+/*  N1：深渊「湮解印记」的非法效果 id               */
 /* -------------------------------------------- */
 
 /** 16 字符；ember 写的 "abyssMarkUnmak0" 只有 15，过不了 `/^[a-zA-Z0-9]{16}$/`。 */
@@ -383,10 +383,10 @@ HOOK_OVERRIDES.push({
  * 漏掉了两类 ——（a）已经迁成 `units:"turns"` 的新形（`shieldBash`、`steamVent`），
  * （b）**冒险/预生成包里 actor 内嵌物品**上的副本，它们不是「重复」而是玩家真会用到的独立实例。
  *
- *  - ember 侧 32 个。九个血统的招牌能力全在里面：Altyra 雷法姆变身、Cor'ak 结晶创伤、
- *    Fej 极限代谢、Hulg'run 活石、Kivahr 律动、Thornling 荆棘皮、Vrjnhar 顽强、
- *    Wirrun 不懈猎手、Zeph 三张面具；敌手动作 abyssalWhispers / bewilderingGaze /
- *    frenziedClaws / searingStare / sentinelShielding 等；
+ *  - ember 侧 32 个。九个血统的招牌能力全在里面：阿尔提拉 Altyra 泰拉菲克变形、科拉克 Cor'ak 结晶化创伤、
+ *    费伊杰 Fej 极限代谢、赫尔格伦 Hulg'run 活石、基瓦尔 Kivahr 规整节律、荆芽灵 Thornling 刺棘树皮、
+ *    弗尔金哈尔 Vrjnhar 强健体力、威伦 Wirrun 无情猎手、泽夫 Zeph 的三种面容；
+ *    敌手动作 abyssalWhispers / bewilderingGaze / frenziedClaws / searingStare / sentinelShielding 等；
  *    以及一批消耗品 alchemicalGrenade / frostFlask / electroAmpoule / cosmicGem×3。
  *  - **crucible 自己的内容 7 个**：devourThoughts、mindFlay、eldritchEmanation、
  *    ferociousHowl、pestilentLash、shieldBash、steamVent。
@@ -483,15 +483,15 @@ ACTION_PATCHES.tyraphicTransformation = {
     e.system.changes = [
       { key: "system.resistances.radiant.bonus", value: 2 * (a.level ?? 0), type: "add" },
       { key: "system.rollBonuses.damage.radiant", value: Math.ceil(presence / 2), type: "add" }
-      // 第三条「威吓 +2 骰运」用 change 表达不出来：rollBonuses 每轮被重置成
-      // 恰好 {damage:{}, boons:{}, banes:{}}（:41179），而骰运的读取点（:36852）是全局的、
+      // 第三条「威吓 +2 恩惠骰」用 change 表达不出来：rollBonuses 每轮被重置成
+      // 恰好 {damage:{}, boons:{}, banes:{}}（:41179），而恩惠骰的读取点（:36852）是全局的、
       // 无法按技能限定。留给上游修，README 里记了一句。
     ];
   }
 };
 
 /* -------------------------------------------- */
-/*  N3：排斥踢的 staggered 变永久                  */
+/*  N3：斥退踢击的 staggered 变永久                */
 /* -------------------------------------------- */
 
 /**
@@ -500,7 +500,7 @@ ACTION_PATCHES.tyraphicTransformation = {
  * → undefined → 核心 AE schema 回落 `{value: null, units: "seconds"}`
  * → `unprepared.value ??= Infinity` → `isTemporary` 为假 → **连过期注册表都不进**。
  * 而 :41808 `else if (statuses.has("staggered")) resources.action.bonus -= 2`
- * —— 中招的角色**每回合永久少 2 点行动点**，效果卡渲染成 ∞ 归入 persistent 段，极易被当成设定。
+ * —— 中招的角色**每回合永久少 2 点动作点**，效果卡渲染成 ∞ 归入 persistent 段，极易被当成设定。
  *
  * 全库唯一性：1437 个动作实例、550 条 duration，`value 是数字 && units === ""` 只有这 2 行。
  * `SYSTEM.EFFECTS.staggered`（:5740）自己的产物是 `{value: turns, units: "rounds", expiry: "turnStart"}`。
@@ -517,13 +517,13 @@ ACTION_PATCHES.sentinelKick = {
 };
 
 /* -------------------------------------------- */
-/*  N4：余烬之火的目标作用域                        */
+/*  N4：余烬之火花的目标作用域                      */
 /* -------------------------------------------- */
 
 /**
  * 数据 `target: {type:"single", number:1, scope:3, self:false}`，而钩子（ember.mjs:125385）
  * 的载荷是 `{resource:"health", delta: max-value}` + `{resource:"wounds", delta: -value}`
- * —— 纯单向增益，代价还含 2 点英雄点。scope=3（ENEMIES）使复活友方尸体的分支**永远选不中目标**：
+ * —— 纯单向增益，代价还含 2 点英雄气概。scope=3（ENEMIES）使复活友方尸体的分支**永远选不中目标**：
  * 目标条目渲染成 unmet、提示「Invalid target scope」、「使用」按钮置灰。
  *
  * 对照：crucible.spell 的 Revive 完全同构（single / max 1 / 复活死者）但 `scope: 4`，
@@ -540,7 +540,7 @@ ACTION_PATCHES.heartSparkOfEmber = {
 };
 
 /* -------------------------------------------- */
-/*  N5：迷乱凝视缺防御标签                          */
+/*  N5：惑乱凝视缺防御标签                          */
 /* -------------------------------------------- */
 
 /**
@@ -590,7 +590,7 @@ ACTION_PATCHES.antigravityStone = {
 };
 
 /* -------------------------------------------- */
-/*  N7：暗焰头冠的 composed 标签                    */
+/*  N7：暗焰光束的 composed 标签                    */
 /* -------------------------------------------- */
 
 /**
@@ -622,7 +622,7 @@ ACTION_PATCHES.darkflameCirclet = {
 /* -------------------------------------------- */
 
 /**
- * C4「翻滚穿越」的目标阵营写反了。
+ * C4「穿越翻滚」的目标阵营写反了。
  *
  * `crucible.talent > tumblethrough000 > tumble` 的 `target.scope` 是 **2 (ALLIES)**，
  * 而描述两次点名 enemy（「穿过目标敌人的格子」）。后果：选中敌人点它 →
@@ -642,12 +642,12 @@ ACTION_PATCHES.tumble = {
 };
 
 /**
- * C5「黎明信标」是 pulse 区域却把 scope 写成 **1 (SELF)**。
+ * C5「曙光信标」是 pulse 区域却把 scope 写成 **1 (SELF)**。
  *
  * 实测数据：`target = {type:"pulse", scope:1, size:60}`。
  * 区域取目标那条路径（`#acquireTargetsFromRegion` `:19620`）**没有单体路径那样的空集保护**
  * （对照 `:19686`），于是一个目标都取不到：60 尺光柱画出来了，聊天卡上零目标零骰子，
- * 站在正中央的敌人不会被致盲，行动与专注全打水漂。
+ * 站在正中央的敌人不会被致盲，动作点与专注全打水漂。
  *
  * crucible 与 ember 都没有为 `dawnBeacon` 注册任何钩子（两份源码 grep 均 0 命中），
  * 所以这里用哪个钩子名都是纯追加，不会顶掉谁。
@@ -691,7 +691,7 @@ ACTION_PATCHES.dawnBeacon = {
  * 覆盖面是**扫出来的**而不是碰上的：把 crucible 与 ember 两侧 packs 全部 409 条动作过了一遍，
  * 先按 `propagate` 求闭包（`natural`→`melee`→`strike` 这种链会补上掷骰实现，
  * 不求闭包会误报 13 条），再挑「带防御标签且闭包后仍无任何 roll 提供者」的。
- * 结果**只有三条**：本条这两个，加上 ember 的 `waterAversion`（Fej 血统）。
+ * 结果**只有三条**：本条这两个，加上 ember 的 `waterAversion`（费伊杰 Fej 血统）。
  * 第三条**故意不修** —— 它自己的描述里写着「ALPHA ONE: This action needs further balancing」，
  * 是作者挂着的半成品，不是漏了实现；而且它 `target.type` 是 `self`，
  * 下面的归属判据本来也拦得住。
@@ -710,7 +710,7 @@ ACTION_PATCHES.repugnantPustules = missingRollProviderPatch;
 ACTION_PATCHES.abyssalRemains = missingRollProviderPatch;
 
 /**
- * C1「吞噬」的效果 ID 是 **17 字符** —— crucible 自家的 N1。
+ * C1「吞下」的效果 ID 是 **17 字符** —— crucible 自家的 N1。
  *
  * `crucible-compiled.mjs:10530` `_SWALLOWED_EFFECT_ID: "swallowed00000000"`
  * （"swallowed" 9 + 8 个 0 = 17），而 `DocumentIdField` 要求恰好 16。
@@ -727,7 +727,7 @@ ACTION_PATCHES.abyssalRemains = missingRollProviderPatch;
  * 所以不需要 N1 那种新旧双认。
  *
  * 影响面：本机 20 个合集、按 `item.name === "Swallow"` 精确匹配，命中 **5 个 adversary**
- * （全在 ember.crucible-adventure：Mootap ×2 / Sarracenias / Obsidian Vine Outgrowth / Towering Obsidian Vine）。
+ * （全在 ember.crucible-adventure：穆塔普 Mootap ×2 / Sarracenias / Obsidian Vine Outgrowth / Towering Obsidian Vine）。
  */
 const SWALLOWED_ID_BAD = "swallowed00000000";   // 17，crucible 0.10.1 的原值
 const SWALLOWED_ID = "swallowed0000000";        // 16
@@ -740,7 +740,7 @@ function applySwallowEffectId(enabled) {
 
   if ( !enabled ) {
     // ⚠ **故意不还原**。还原成坏值会让本次会话里已经被吞下去的目标再也放不出来
-    //   （「反刍」按坏 id 查，查不到 → token 保持 hidden）。而坏值本来就是非法的、
+    //   （「反吐」按坏 id 查，查不到 → token 保持 hidden）。而坏值本来就是非法的、
     //   留着合法 id 不会造成任何伤害。要真回到上游原样，停用模块并刷新即可。
     return;
   }
@@ -876,7 +876,7 @@ const settingOn = key => {
  * 物品被角色持有时 `transfer:true` 的效果直接创建、GM 手动拖效果、宏里 `createEmbeddedDocuments`
  * ——这几条路 N10 一条都拦不到。全包深扫（409 条动作之外另算）在 `items[].effects[]` 上
  * 找到 **22 个** `units:"turns"` 效果，其中 `crucible-adventure` 包（真正会进 crucible 世界的那个）
- * 占 6 个，最扎眼的是 Mythspire Guardian 的「Nearing Death」——它是 `transfer:true`，
+ * 占 6 个，最扎眼的是神话尖塔守护者 Mythspire Guardian 的「濒临死亡 Nearing Death」——它是 `transfer:true`，
  * 意味着这个天赋**一被持有就该生效，实际上永远建不出来**。
  *
  * ⚠ 为什么必须包 `_preCreate` 而不是挂 `preCreateActiveEffect` 钩子：
@@ -1017,14 +1017,14 @@ PROTOTYPE_PATCHES.push({
 /* -------------------------------------------- */
 
 /**
- * I1（上游 issue **#1403**）：**Wild Strike 在没有天生武器时仍然可用，而且能白刷行动点。**
+ * I1（上游 issue **#1403**）：**Wild Strike 在没有天生武器时仍然可用，而且能白刷动作点。**
  *
  * `natural` 标签的 canUse（`:4273`）是
  * `if ( !this.usage.strikes.every(w => w.system.properties.has("natural")) ) throw ...`
  * —— `strikes` 是**空数组**时 `every` 返回 **true**，判据真空通过。
  *
  * 于是没有天生武器的角色点 Wild Strike：动作显示可用、点得动、生成聊天卡，
- * 但**一次骰都不掷、一点伤害都不出**，反而把行动点退还回来 —— 等于无本万利的行动点发生器。
+ * 但**一次骰都不掷、一点伤害都不出**，反而把动作点退还回来 —— 等于无本万利的动作点发生器。
  *
  * 上游 `crucible.api.hooks.action.wildStrike`（`:11051`）**只定义了 `acquireTargets`**，
  * 所以补一个 `canUse` 是纯追加，顶不掉任何东西。
@@ -1048,7 +1048,7 @@ ACTION_PATCHES.wildStrike = {
  * `:15597` 写的也是 `system.details.<property>`，数据准备时会把背景那份并进来）。
  *
  * 后果不只是气泡：GM 手工给角色加的知识，在 Assess Strength / Intuit Weakness 里
- * **本该拿到的 +2 祝福不会出现**，玩家只会觉得「这知识加了好像没用」。
+ * **本该拿到的 +2 恩惠骰不会出现**，玩家只会觉得「这知识加了好像没用」。
  *
  * 修法是**整体替换**（原函数只有两行，逻辑简单到不构成照抄）：改读聚合值，
  * 读不到再退回上游原来的那份，保证只增不减。
@@ -1069,30 +1069,30 @@ PROTOTYPE_PATCHES.push({
 });
 
 /**
- * I3（上游 issue **#1406**）：**「私密传记」对只有 limited/observer 权限的用户照样渲染。**
+ * I3（上游 issue **#1406**）：**「私人传记」对只有 limited/observer 权限的用户照样渲染。**
  *
  * `CrucibleBaseActorSheet#_prepareContext`（`:14599`）无条件 `biography: await this.#prepareBiography()`，
  * 而 `#prepareBiography()`（`:14663`）把 `privateField` / `privateSrc` / `privateHTML`
  * **无条件**塞进上下文 —— 没有任何权限判断（那句 `secrets: this.document.isOwner` 只管
  * 富文本里的 secret 块，管不到 private 字段本身）。
  *
- * GM 把 NPC 权限设成 limited 好让玩家查基本信息，玩家切到「传记」页就能**原文读到 GM 私记**
+ * GM 把 NPC 权限设成 limited 好让玩家查基本信息，玩家切到「生平」页就能**原文读到 GM 私记**
  * —— 身份反转、隐藏动机、剧透。tooltip 上写着「仅拥有者可见」，实现没兑现。
  *
  * 修法：包装 `_prepareContext`，非拥有者时把 private 三件套抹掉。
  * 这是**只减不增**的改动，最坏情况是拥有者也看不到（那会立刻被发现），不会造成新的泄漏。
  */
 PROTOTYPE_PATCHES.push({
-  label: "CrucibleBaseActorSheet#_prepareContext（I3 私密传记泄漏）",
+  label: "CrucibleBaseActorSheet#_prepareContext（I3 私人传记泄漏）",
   setting: "patchPrivateBiography",
   resolve: () => globalThis.crucible?.api?.applications?.CrucibleBaseActorSheet,
   method: "_prepareContext",
   wrap: (orig, setting) => async function _prepareContext(...args) {
     const context = await orig.apply(this, args);
 
-    // I3：非拥有者不该看到私密传记
+    // I3：非拥有者不该看到私人传记
     // ⚠ 不要把 `privateField` 置为 null —— 模板拿它去渲染表单控件，null 会让非拥有者
-    //   每次渲染刷一条 console.error，并在传记页底部留一个没有标题的空折叠条。
+    //   每次渲染刷一条 console.error，并在生平页底部留一个没有标题的空折叠条。
     //   控制台噪声本身就是我们要清掉的东西（它会污染「无未捕获异常」这条验收标准）。
     //   正确做法是把这几个键**整个删掉**，模板取不到就不渲染那一段。
     if ( settingOn(setting) ) {
@@ -1105,7 +1105,7 @@ PROTOTYPE_PATCHES.push({
       }
     }
 
-    // B5（上游 ac1b5cfc）：侧栏「精选装备」的天生武器循环上界写成 `i < 3 - featuredEquipment.length`，
+    // B5（上游 ac1b5cfc）：侧栏「当前装备」的天生武器循环上界写成 `i < 3 - featuredEquipment.length`，
     // 而每 push 一件上界就缩一格 —— 多爪多牙的怪物最多只列得出 1 件天生武器。
     // 纯显示层：动作列表里那些打击照常在，命中与伤害不受影响。
     // 这里在上游填完之后**补齐到 3 件**，顺序与上游一致（主手 → 副手 → 天生）。
@@ -1227,7 +1227,7 @@ PROTOTYPE_PATCHES.push({
 });
 
 /**
- * E1：**「稳定护佑」的酸性抗性算成 `NaN`。**
+ * E1：**「稳定守护」的酸性抗性算成 `NaN`。**
  *
  * `ember.crucible-effects > wardOfStabilizat` 的唯一一条 change 是
  * `{key: "system.resistances.acid", type: "add", value: 5}` —— **少了 `.bonus`**。
@@ -1279,9 +1279,9 @@ PROTOTYPE_PATCHES.push({
  * | `implacableHunter` | `implacableHunte0` | `implacableHunter`（`ember.mjs:126089`） |
  * | `formidableStamina` | `formidableStami0` | `formidableStamin`（`ember.mjs:126067`） |
  *
- * 后果：Wirrun 血裔花 1 专注 + 1 英雄点标记猎物后，**朝猎物的攻击一次 +2 祝福都不会出现**；
- * Vrjnhar 血裔的「顽强体力」（行动点见底时退还 1 点）**从头到尾一次都不触发**。
- * 两条都是血裔的招牌能力，玩家只会以为自己记错了规则。
+ * 后果：威伦 Wirrun 血统的角色花 1 专注 + 1 点英雄气概标记猎物后，**朝猎物的攻击一次 +2 恩惠骰都不会出现**；
+ * 弗尔金哈尔 Vrjnhar 血统的「强健体力」（动作点见底时退还 1 点）**从头到尾一次都不触发**。
+ * 两条都是血统的招牌能力，玩家只会以为自己记错了规则。
  *
  * 修法特意选了**轻的那一边**：ember 查的那两个串**本身就是合法的 16 位 id**，
  * 而这两个动作又**各只有一条效果**（index 0，无歧义）。
@@ -1432,19 +1432,19 @@ for ( const [actionId, cfg] of Object.entries(DAMAGE_TYPE_FIXES) ) {
 }
 
 /* -------------------------------------------- */
-/*  P3 + N9：符文小戏法与训练等级                   */
+/*  P3 + N9：符文戏法与训练阶位                     */
 /* -------------------------------------------- */
 
 /**
  * `system.rune` 只负责把符文塞进 `grimoire.runeIds`（:41287），
- * 而每个符文的**招牌小戏法**挂在 crucible 那条 `Rune: X` 天赋的 `system.actions` 上。
+ * 而每个符文的**招牌戏法**挂在 crucible 那条 `Rune: X` 天赋的 `system.actions` 上。
  *
  * 按 **rune** 查表而不是按天赋 item id —— 这样同时盖住两批：
- *  - ember 的 4 个血统（Zeph/Drakon/Kiska/Nir'ae，item id 各不相同）
+ *  - ember 的 4 个血统（泽夫 Zeph / 龙裔 Drakon / 基斯卡 Kiska / 尼尔艾 Nir'ae，item id 各不相同）
  *  - `crucible.summons` 里 9 条旧快照（_stats.systemVersion 停在 0.9.0，training 全空、actions 全空，
  *    其中 4 条还是已废弃的小写 id `runeflame0000000` 等）
  *
- * `life`(Healer) / `soul`(bard) 故意不在表里：它们的**正版条目**训练等级本来就是空的，
+ * `life`(Healer) / `soul`(bard) 故意不在表里：它们的**正版条目**训练阶位本来就是空的，
  * 属于设计而不是旧快照。
  * @type {Record<string, {talentId: string, actionId: string}>}
  */
@@ -1458,7 +1458,7 @@ const RUNE_CANTRIPS = {
   death:        { talentId: "runeDeath0000000", actionId: "ennervate" }
 };
 
-/** actionId → 小戏法的源数据（ready 时从合集读一次，因此会带上 babele 的中文名与描述） */
+/** actionId → 戏法的源数据（ready 时从合集读一次，因此会带上 babele 的中文名与描述） */
 const CANTRIP_SOURCES = {};
 
 /**
@@ -1477,12 +1477,12 @@ function fixRuneTalentTraining(actor) {
     const rune = item.system?.rune;
     if ( !rune || !RUNE_CANTRIPS[rune] ) continue;
     if ( item.system.training?.type ) continue;              // 上游已填 → 不插手
-    training[rune] = Math.max(training[rune] ?? 0, 1);       // 不降级已有的更高等级
+    training[rune] = Math.max(training[rune] ?? 0, 1);       // 不降级已有的更高阶位
   }
 }
 
 /**
- * N9(b) + P3：把缺失的小戏法补进 `system.actions`。
+ * N9(b) + P3：把缺失的戏法补进 `system.actions`。
  * @param {object} actor    角色
  * @param {object} actions  `system.actions` 那个 record（不是数组）
  */
@@ -1514,7 +1514,7 @@ function injectRuneCantrips(actor, actions) {
 }
 
 /**
- * 把符文小戏法的源数据读进缓存。走合集读取而不是硬编码，是为了带上 babele 的中文名与中文描述。
+ * 把符文戏法的源数据读进缓存。走合集读取而不是硬编码，是为了带上 babele 的中文名与中文描述。
  */
 async function loadCantripSources() {
   const pack = game.packs.get("crucible.talent");
@@ -1530,7 +1530,7 @@ async function loadCantripSources() {
       warn(`读取 ${cfg.talentId} 失败`, err);
     }
   }
-  log(`已缓存 ${Object.keys(CANTRIP_SOURCES).length} 个符文小戏法`);
+  log(`已缓存 ${Object.keys(CANTRIP_SOURCES).length} 个符文戏法`);
 }
 
 /* -------------------------------------------- */
@@ -1621,7 +1621,7 @@ function installHookOverrides() {
 }
 
 /* -------------------------------------------- */
-/*  N11：符文 Spellcraft 词缀的训练等级             */
+/*  N11：符文 Spellcraft 词缀的训练阶位             */
 /* -------------------------------------------- */
 
 /**
@@ -1642,7 +1642,7 @@ function installHookOverrides() {
  *
  * 后果不是「建卡失败」而是**静默降级**：`prepareGrimoire` 的 hook 配置没有 `throws`（`:1168`），
  * 异常被 `callActorHooks` 的 try/catch 吞成 console.error；而抛出点在
- * `grimoire.runeIds.push(runeId)` **之后** —— 所以符文知识拿到了、训练等级没设上，
+ * `grimoire.runeIds.push(runeId)` **之后** —— 所以符文知识拿到了、训练阶位没设上，
  * 角色施放该符文的法术时按**未受训 −4**（`:6834`）结算，每次数据准备还刷一条控制台错误。
  *
  * 影响面：12 个符文 Spellcraft 词缀（`crucible.affixes` 里 `system.identifier` 与钩子键逐一对应，
@@ -1688,7 +1688,7 @@ function installAffixTrainingFix() {
     cfg.prepareGrimoire = patched;
     n++;
   }
-  if ( n ) log(`N11：修正了 ${n} 个符文 Spellcraft 词缀的训练等级写入`);
+  if ( n ) log(`N11：修正了 ${n} 个符文 Spellcraft 词缀的训练阶位写入`);
   return true;
 }
 
@@ -1719,7 +1719,7 @@ function installActorHookPatch() {
     if ( hook === "prepareGrimoire" ) {
       if ( on("patchRuneCantrips") ) {
         try { fixRuneTalentTraining(this); }
-        catch ( err ) { warn("修正符文训练等级失败", this?.name, err); }
+        catch ( err ) { warn("修正符文训练阶位失败", this?.name, err); }
       }
     }
     else if ( hook === "prepareActions" ) {
@@ -1729,7 +1729,7 @@ function installActorHookPatch() {
       }
       if ( on("patchRuneCantrips") ) {
         try { injectRuneCantrips(this, args[0]); }
-        catch ( err ) { warn("注入符文小戏法失败", this?.name, err); }
+        catch ( err ) { warn("注入符文戏法失败", this?.name, err); }
       }
     }
     return result;
@@ -2201,55 +2201,55 @@ Hooks.once("init", () => {
 
   // ── ① 影响最大 —— 效果根本没被创建 ──────────────────────────────────────────
   bool("patchTurnsDuration", "① N10 + N12 修正被系统拒绝创建的效果时长（影响面最大）",
-    "<strong>38 个动作</strong>的效果时长写的是旧的 <code>turns</code> 单位，而系统在创建效果时会直接拒绝这个单位——<strong>聊天卡写着「获得效果」，角色身上却什么都没有</strong>。<strong>九个血统的招牌变身全部中招</strong>（雷法姆变身/结晶创伤/极限代谢/活石/律动/荆棘皮/顽强/不懈猎手/泽夫三面具），此外还波及 crucible <strong>自己的</strong>内容 7 个（吞噬思绪/心灵摧残/奥术涌流/凶戾咆哮/疫疠之鞭/盾击/蒸汽喷发），以及 ember 的一批消耗品（炼金榴弹/冰霜瓶/电解安瓿/三枚宇宙宝石）。开启后把单位换成「轮」，数值不变。<br>同一开关还管 <strong>N12</strong>：另有 22 个效果直接写在物品文档上（例如 Mythspire Guardian 的「Nearing Death」，持有即应生效却永远建不出来），它们的创建不经过动作，要在效果创建那一层才拦得到。<br>注意这是解释而非还原：上游没有 turns 这个单位，原作者想要多久无从考证。");
-  bool("patchEffectChanges", "① N2 修正「强化护盾」/「雷法姆变身」丢失的加值",
-    "这两个动作把 changes 写在了效果数据的顶层，而系统只从 effect.system 下读。<strong>本项依赖上面的 N10</strong>——它们的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。（威吓骰运那一条系统层面表达不了，仍未生效。）");
-  bool("patchEffectIdAlignment", "① E2 让「不懈猎手」与「顽强体力」真正触发",
-    "ember 这两处按猜出来的 id 查效果，而系统生成的是另一个——查询永远落空：<strong>朝猎物的攻击一次 +2 祝福都不会出现</strong>，「顽强体力」的行动点退还从头到尾一次都不触发。两条都是血裔的招牌能力。开启后把写入端的效果 ID 对齐到它要找的那个。<strong>本项依赖 N10</strong>——这两个动作的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。");
+    "<strong>38 个动作</strong>的效果时长写的是旧的 <code>turns</code> 单位，而系统在创建效果时会直接拒绝这个单位——<strong>聊天卡写着「获得效果」，角色身上却什么都没有</strong>。<strong>九个血统的招牌变身全部中招</strong>（泰拉菲克变形/结晶化创伤/极限代谢/活石/规整节律/刺棘树皮/强健体力/无情猎手/泽夫的三种面容），此外还波及 crucible <strong>自己的</strong>内容 7 个（吞噬思维/精神鞭笞/邪异流溢/凶暴嚎叫/疫病鞭笞/盾牌猛击/蒸汽喷口），以及 ember 的一批消耗品（炼金手雷/霜滴小瓶/电荷安瓿/三枚宇宙宝石）。开启后把单位换成「轮」，数值不变。<br>同一开关还管 <strong>N12</strong>：另有 22 个效果直接写在物品文档上（例如神话尖塔守护者 Mythspire Guardian 的「濒临死亡 Nearing Death」，持有即应生效却永远建不出来），它们的创建不经过动作，要在效果创建那一层才拦得到。<br>注意这是解释而非还原：上游没有 turns 这个单位，原作者想要多久无从考证。");
+  bool("patchEffectChanges", "① N2 修正「强化护盾」/「泰拉菲克变形」丢失的加值",
+    "这两个动作把 changes 写在了效果数据的顶层，而系统只从 effect.system 下读。<strong>本项依赖上面的 N10</strong>——它们的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。（威吓 +2 恩惠骰那一条系统层面表达不了，仍未生效。）");
+  bool("patchEffectIdAlignment", "① E2 让「无情猎手」与「强健体力」真正触发",
+    "ember 这两处按猜出来的 id 查效果，而系统生成的是另一个——查询永远落空：<strong>朝猎物的攻击一次 +2 恩惠骰都不会出现</strong>，「强健体力」的动作点退还从头到尾一次都不触发。两条都是血统的招牌能力。开启后把写入端的效果 ID 对齐到它要找的那个。<strong>本项依赖 N10</strong>——这两个动作的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。");
 
   // ── ② 动作放不出去 / 点了什么都不发生 ─────────────────────────────────────────
-  bool("patchAbyssMark", "② N1 修正深渊「湮灭之印」的非法效果 ID",
+  bool("patchAbyssMark", "② N1 修正深渊「湮解印记」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
-  bool("patchSwallowEffectId", "② C1 修正「吞噬」的非法效果 ID（crucible 自身缺陷）",
-    "crucible 给 Swallow 硬编码的效果 id 有 17 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣，配套的「反刍」也永远找不到要删的效果。开启后换成合法的 16 位 ID。");
-  bool("patchDarkflameCirclet", "② N7 修正「暗焰头冠」的非法标签",
+  bool("patchSwallowEffectId", "② C1 修正「吞下」的非法效果 ID（crucible 自身缺陷）",
+    "crucible 给 Swallow 硬编码的效果 id 有 17 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣，配套的「反吐」也永远找不到要删的效果。开启后换成合法的 16 位 ID。");
+  bool("patchDarkflameCirclet", "② N7 修正「暗焰光束」的非法标签",
     "用了只对法术动作合法的 composed 标签，导致使用时崩在生成聊天卡之前——资源不扣、卡也不出。开启后移除该标签。");
-  bool("patchSparkScope", "② N4 修正「余烬之火」的目标作用域",
+  bool("patchSparkScope", "② N4 修正「余烬之火花」的目标作用域",
     "作用域写成了「敌人」，但它的复活分支是针对友方尸体的，导致那半边永远选不中目标、使用按钮置灰。开启后放宽为「全部」，由动作自己的条件把关。");
   bool("patchAntigravityStone", "② N6 修正「反重力石」的目标类型",
     "纯自身效果却写成「单体目标且不可选自己」，必须拿别人凑数才能用，选自己反而会把规划好的位移路径丢掉。开启后改为自身目标。");
-  bool("patchTumbleScope", "② C4 修正「翻滚穿越」的目标阵营（crucible 自身缺陷）",
-    "目标阵营写成了「盟友」，而描述两次点名敌人。后果是选中敌人时提示阵营不合法、动作放不出来，只有选队友才能用。开启后改为敌人。");
-  bool("patchDawnBeaconScope", "② C5 修正「黎明信标」的目标阵营（crucible 自身缺陷）",
+  bool("patchTumbleScope", "② C4 修正「穿越翻滚」的目标阵营（crucible 自身缺陷）",
+    "目标阵营写成了「盟友」，而描述两次点名敌人。后果是选中敌人时提示阵营不合法、动作放不出来，只有选队友才能用。开启后改为敌人。<br>改的是天赋「穿越翻滚 Tumble Through」下的那个动作——它在动作列表里显示为<strong>「翻滚 tumble」</strong>，验收时找这个名字。");
+  bool("patchDawnBeaconScope", "② C5 修正「曙光信标」的目标阵营（crucible 自身缺陷）",
     "这是个 60 尺的 pulse 区域，作用域却写成了「自身」，导致区域取目标时一个都取不到——光柱画出来了，聊天卡上零目标零骰子。开启后改为敌人。");
 
   // ── ③ 能用，但结算错了 ──────────────────────────────────────────────────
-  bool("patchOffhandStrike", "③ P1 修正副手打击的前置判据",
+  bool("patchOffhandStrike", "③ P1 修正副手攻击的前置判据",
     "系统用武器的<strong>存盘</strong> slot 判断上一击是不是主手，而对「任一手」武器来说手位只存在于派生值里；徒手更是从头到尾没被赋过手位。开启后改用角色身上那件武器当前的实际手位判断，并给徒手/临时武器补上手位。");
-  bool("patchSuddenBite", "③ P2 修正凯思族「撕咬」的攻击范围",
+  bool("patchSuddenBite", "③ P2 修正凯思血统「猝然撕咬」的攻击范围",
     "ember 把 range 写成 min=max=2，而 minimum 量的是贴边距离（相邻＝0），等于把「贴着咬」排除掉了。开启后改为 min=空 / max=1，与同类近身单体动作一致。");
   bool("patchRestorativeRedirection", "③ P4 修正「疗愈导流」恢复的资源种类",
     "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
-  bool("patchStaggerDuration", "③ N3 修正「排斥踢」的踉跄变永久",
-    "duration 有 value 却没有 units，被系统整段丢弃，踉跄因此永不过期——中招的角色每回合永久少 2 点行动点。开启后补上 units=rounds。");
-  bool("patchBewilderingGaze", "③ N5 给「迷乱凝视」补上意志防御标签",
+  bool("patchStaggerDuration", "③ N3 修正「斥退踢击」的踉跄变永久",
+    "duration 有 value 却没有 units，被系统整段丢弃，踉跄因此永不过期——中招的角色每回合永久少 2 点动作点。开启后补上 units=rounds。");
+  bool("patchBewilderingGaze", "③ N5 给「惑乱凝视」补上意志防御标签",
     "缺 willpower 标签，导致这个精神攻击按护甲结算（还会被「用盾牌挡下」）。开启后补上标签，与同类动作一致。");
   bool("patchMissingRollProvider", "③ X1 给两条区域伤害动作补上掷骰实现",
-    "「脓疱迸裂」与「深渊残渣」都带防御与伤害类型标签，唯独缺少任何提供掷骰实现的标签，导致描述里承诺的伤害完全不会发生。已逐条确认这两个动作在 crucible 与 ember 的钩子注册表里都没有任何代码侧自动化；两侧 packs 全部 409 条动作扫过一遍，这类动作只有它们俩（另一条是作者自己标注「待平衡」的半成品，本模块不碰）。开启后补上通用掷骰标签。<strong>补的是实现而不是数值</strong>——防御、伤害类型、属性加值、−6 减值全部读自动作自己的标签，本模块不发明任何数字；「深渊残渣」数据里没有任何属性缩放标签，所以它打出来偏弱，这是原数据如此。");
+    "「令人作呕的脓疱」与「深渊遗骸」都带防御与伤害类型标签，唯独缺少任何提供掷骰实现的标签，导致描述里承诺的伤害完全不会发生。已逐条确认这两个动作在 crucible 与 ember 的钩子注册表里都没有任何代码侧自动化；两侧 packs 全部 409 条动作扫过一遍，这类动作只有它们俩（另一条是作者自己标注「待平衡」的半成品，本模块不碰）。开启后补上通用掷骰标签。<strong>补的是实现而不是数值</strong>——防御、伤害类型、属性加值、−6 减值全部读自动作自己的标签，本模块不发明任何数字；「深渊遗骸」数据里没有任何属性缩放标签，所以它打出来偏弱，这是原数据如此。");
   bool("patchDamageTypes", "③ D 系列 修正描述与数据不符的伤害类型",
-    "三条动作的伤害类型与自己的描述矛盾：「毒液喷吐」结算成电击（上游已在开发版改成毒），「自毁」的烈焰爆炸结算成穿刺，「吞噬思绪」的灵能伤害落回天生武器的钝击。后果是抗性算错——吃火抗的角色挡不住火焰爆炸，吃钝击抗性的重甲反而能挡下纯精神攻击。开启后按描述修正。注意<strong>「吞噬思绪」来自 playtest（试玩）合集</strong>，不是正式内容包，若你的世界没导入过它这一条自然不会触发。");
-  bool("patchResistanceChangeKey", "③ E1 修正「稳定护佑」把酸性抗性算成 NaN",
+    "三条动作的伤害类型与自己的描述矛盾：「剧毒喷雾」结算成电击（上游已在开发版改成毒），「自毁」的烈焰爆炸结算成穿刺，「吞噬思维」的灵能伤害落回天生武器的钝击。后果是抗性算错——吃火抗的角色挡不住火焰爆炸，吃钝击抗性的重甲反而能挡下纯精神攻击。开启后按描述修正。注意<strong>「吞噬思维」来自 playtest（试玩）合集</strong>，不是正式内容包，若你的世界没导入过它这一条自然不会触发。");
+  bool("patchResistanceChangeKey", "③ E1 修正「稳定守护」把酸性抗性算成 NaN",
     "该效果的加值写在了抗性对象本身而不是它的 bonus 字段上，导致派生出来的酸性抗性变成 NaN，此后每次酸性伤害结算都带着 NaN 传播。开启后自动补上正确的字段路径。");
-  bool("patchWildStrike", "③ I1 堵住「野性打击」的行动点漏洞（上游 issue #1403）",
-    "没有天生武器的角色也能用「野性打击」——判据用 every() 检查空数组，真空通过。动作显示可用、生成聊天卡，但一次骰都不掷、一点伤害都不出，<strong>反而把行动点退还回来</strong>，等于无本万利的行动点发生器。开启后没有天生武器时正常拦住。");
+  bool("patchWildStrike", "③ I1 堵住「狂野打击」的动作点漏洞（上游 issue #1403）",
+    "没有天生武器的角色也能用「狂野打击」——判据用 every() 检查空数组，真空通过。动作显示可用、生成聊天卡，但一次骰都不掷、一点伤害都不出，<strong>反而把动作点退还回来</strong>，等于无本万利的动作点发生器。开启后没有天生武器时正常拦住。");
   bool("patchRepeatedPrepare", "③ I4 修正位移动作重复准备导致的加成叠加（上游 issue #1404）",
     "位移类动作在规划路径后会第二次准备，而系统只重置了消耗、没重置加成——带「强化」标签的动作（如飞踢）伤害会<strong>比条目描述多 6 点</strong>；路径被判非法需要重新规划时会变成多 18 点。开启后每次准备前把加成恢复成原始态。");
-  bool("patchAffixTraining", "③ N11 修正符文词缀不设训练等级",
-    "crucible 自己的 bug：12 个符文 Spellcraft 词缀的钩子把训练等级写到了 actor <em>文档</em>上，而那里没有这个字段，于是抛异常被吞掉——<strong>符文知识拿到了，训练等级没设上</strong>，施放该符文的法术按「未受训 −4」结算，控制台每次数据准备刷一条错误。开启后改写到数据模型上。");
-  bool("patchRuneCantrips", "③ P3 补上符文所授的小戏法与训练等级",
-    "带 rune 的天赋（ember 四血统、以及召唤合集里九条旧快照）都没带该符文的招牌小戏法；旧快照还连训练等级一起丢了，导致本命符文法术按「未受训 −4」结算。开启后在运行时补齐。");
+  bool("patchAffixTraining", "③ N11 修正符文词缀不设训练阶位",
+    "crucible 自己的 bug：12 个符文 Spellcraft 词缀的钩子把训练阶位写到了 actor <em>文档</em>上，而那里没有这个字段，于是抛异常被吞掉——<strong>符文知识拿到了，训练阶位没设上</strong>，施放该符文的法术按「未受训 −4」结算，控制台每次数据准备刷一条错误。开启后改写到数据模型上。");
+  bool("patchRuneCantrips", "③ P3 补上符文所授的戏法与训练阶位",
+    "带 rune 的天赋（ember 四血统、以及召唤合集里九条旧快照）都没带该符文的招牌戏法；旧快照还连训练阶位一起丢了，导致本命符文法术按「未受训 −4」结算。开启后在运行时补齐。");
   bool("patchHasKnowledge", "③ I2 让手工添加的知识真正生效（上游 issue #1412）",
-    "系统判断「角色有没有某项知识」时只读背景给的那一份，GM 手工加的知识一律当作不存在——用「评估强度」「洞察弱点」时本该拿到的 +2 祝福不会出现。开启后改读角色的知识聚合值。");
+    "系统判断「角色有没有某项知识」时只读背景给的那一份，GM 手工加的知识一律当作不存在——用「评估力量」「洞悉弱点」时本该拿到的 +2 恩惠骰不会出现。开启后改读角色的知识聚合值。");
   bool("patchThrowableOnly", "③ I7 投掷武器的下拉框只列扔得出去的武器（上游 issue #1288）",
     "「投掷武器」的选择框把徒手、天生武器这些<strong>扔不出去</strong>的也列了出来，选中再用就报错。上游每个需求标签都会在准备阶段把用不了的武器标成不可选（近战标签排除远程武器、远程标签排除近战武器、天生标签同理），唯独「投掷」标签漏了这一步。开启后按上游自己的写法补上。<br>上游 issue 还提到「选了非法的那个之后这个动作从此点不动、要重启会话才恢复」——非法选项从可选列表里消失后，系统锁定所选武器的那一步会找不到它、自动落回正常挑选，因此下一次准备就会脱困。<strong>但那半个症状本模块没有复现过</strong>，若卡死另有来源则不保证解决。");
 
@@ -2260,31 +2260,16 @@ Hooks.once("init", () => {
     "货币元素在首次构建时把自己的 value 属性删掉了，元素被搬进弹窗重新连接时只能读回 0。改动一次货币又会自己好。上游已在开发版修好（尚未发布），本项把它回搬。");
   bool("patchSkillDialogSwap", "④ B4 回搬：掷骰对话框里换了技能却没生效（上游 798a8638）",
     "多技能团队检定时，玩家在对话框里换成另一项技能，系统掷的仍然是默认那一项——对话框的返回值被丢掉了。上游已在开发版修好（尚未发布），本项把它回搬。单技能检定不受影响。");
-  bool("patchFeaturedEquipment", "④ B5 修好侧栏「精选装备」只列得出 1 件天生武器（上游 ac1b5cfc）",
+  bool("patchFeaturedEquipment", "④ B5 修好侧栏「当前装备」只列得出 1 件天生武器（上游 ac1b5cfc）",
     "天生武器的循环上界写成「3 减去已列数量」，而每加一件上界就缩一格，导致多爪多牙的怪物最多只列出 1 件。纯显示层：动作列表里那些打击照常在，命中与伤害不受影响。上游已在开发版修好（尚未发布）。");
 
   // ── ⑤ 显示与界面 ─────────────────────────────────────────────────────
-  bool("patchPrivateBiography", "⑤ I3 修补私密传记的泄漏（上游 issue #1406）",
-    "<strong>这是信息泄漏</strong>：角色卡把「私密传记」无条件渲染给所有能打开卡的人，权限设成 limited/observer 的玩家照样能原文读到 GM 私记。提示语写着「仅拥有者可见」，实现却没兑现。开启后非拥有者看不到该字段。");
+  bool("patchPrivateBiography", "⑤ I3 修补私人传记的泄漏（上游 issue #1406）",
+    "<strong>这是信息泄漏</strong>：角色卡把「私人传记」无条件渲染给所有能打开卡的人，权限设成 limited/observer 的玩家照样能原文读到 GM 私记。提示语写着「仅拥有者可见」，实现却没兑现。开启后非拥有者看不到该字段。");
   bool("patchDefenseTypeLabel", "⑤ I5 让玩家也看得到攻击打的是哪条防御（上游 issue #1402）",
     "攻击聊天卡上的目标栏，GM 端显示「反射 12」而玩家端只有「DC」——防御类型本来是公开信息（条目描述里就写着），该藏的只有数值。开启后玩家端补上类型，<strong>仍然不显示 DC 数字</strong>。");
   bool("patchFlankingToggle", "⑤ I6 修好「可视化夹击」叠层关不掉（上游 issue #1311）",
     "关闭该调试叠层时系统只清理当前选中的 token，换选之后旧图形就钉死在画布上，再点开关也清不掉，只能刷新页面。开启后关闭时清理全部 token。仅 GM 可见。");
-
-  // 控制面板入口。放在 bool() 全部注册完之后 —— 面板要读 SETTING_CATALOG。
-  // 拿不到 ApplicationV2 就安静跳过：面板是便利设施，不能因为它没建成就让整个模块炸在 init。
-  const Toolbox = getToolboxClass();
-  if ( Toolbox ) {
-    game.settings.registerMenu(MODULE_ID, "toolbox", {
-      name: "控制面板",
-      label: "打开控制面板",
-      hint: "一处看全：每条补丁此刻是否生效、一键自检、复制诊断报告、批量开关。每个按钮旁边都写着等价的控制台命令。",
-      icon: "fa-solid fa-wrench",
-      type: Toolbox,
-      restricted: true
-    });
-  }
-  else warn("拿不到 ApplicationV2，控制面板未注册（补丁本身不受影响）");
 
   game.settings.register(MODULE_ID, "redirectResource", {
     name: "P4 疗愈导流恢复哪种资源",
@@ -2294,8 +2279,59 @@ Hooks.once("init", () => {
     onChange: reload
   });
 
+  // 控制面板入口**放在最后**，而且整段包在 try 里。
+  //
+  // 0.7.0 踩过的坑：这一段原先夹在 bool() 与 redirectResource 之间，且 `getToolboxClass()`
+  // 裸调。它一抛，`registerMenu`、`redirectResource`、`applyToggles()` **全部不执行** ——
+  // 而症状只是「面板不见了、下拉框不见了」，看不出是 init 半途死了。
+  // 现在：面板是最后一步，塌了也带不走任何东西；而且 registerToolboxMenu 会在
+  // setup / ready 各重试一次（ApplicationV2 在 init 时还没就位的情况也能救回来）。
+  registerToolboxMenu();
+
   applyToggles();
 });
+
+/** 已经注册过控制面板菜单没有（重试用；registerMenu 重复调用会覆盖，但没必要白跑） */
+function toolboxMenuRegistered() {
+  try { return !!game.settings.menus?.has?.(`${MODULE_ID}.toolbox`); } catch { return false; }
+}
+
+/**
+ * 注册控制面板菜单。**幂等**，且在 init / setup / ready 各试一次。
+ *
+ * 为什么要重试：`registerMenu` 要求 `type` 在注册时就是个 ApplicationV2 子类，
+ * 所以类必须当场建出来。而 `foundry.applications.api.ApplicationV2` 在 init 阶段
+ * 是否已经就位，取决于 Foundry 版本与加载顺序 —— 拿不到就等下一个阶段再试。
+ * 菜单在 `SettingsConfig` **渲染时**才读 `game.settings.menus`（foundry.mjs:91028），
+ * 所以 ready 阶段补注册照样能显示出来。
+ * @returns {boolean} 这次调用之后菜单是否已注册
+ */
+function registerToolboxMenu() {
+  if ( toolboxMenuRegistered() ) return true;
+  let Toolbox = null;
+  try { Toolbox = getToolboxClass(); }
+  catch ( err ) {
+    warn(`控制面板类建不起来：${err?.message ?? err}（补丁本身不受影响）`);
+    console.error(`${MODULE_ID} | 控制面板类建不起来`, err);
+    return false;
+  }
+  if ( !Toolbox ) return false;          // ApplicationV2 还没就位，下个阶段再试
+  try {
+    game.settings.registerMenu(MODULE_ID, "toolbox", {
+      name: "控制面板",
+      label: "打开控制面板",
+      hint: "一处看全：每条补丁此刻是否生效、一键自检、复制诊断报告、批量开关。每个按钮旁边都写着等价的控制台命令。",
+      icon: "fa-solid fa-wrench",
+      type: Toolbox,
+      restricted: true
+    });
+    return true;
+  } catch ( err ) {
+    warn(`控制面板菜单注册失败：${err?.message ?? err}（补丁本身不受影响）`);
+    console.error(`${MODULE_ID} | 控制面板菜单注册失败`, err);
+    return false;
+  }
+}
 
 Hooks.once("setup", () => {
   if ( game.system?.id !== "crucible" ) return;
@@ -2306,10 +2342,25 @@ Hooks.once("setup", () => {
   installPrototypePatches();
   // ember 在 init 注册钩子，而 #prepareHooks 在角色数据准备时才快照 —— setup 正好夹在中间
   installHookOverrides();
+  registerToolboxMenu();       // init 时若 ApplicationV2 还没就位，这里补一次
 });
 
 Hooks.once("ready", async () => {
   if ( game.system?.id !== "crucible" ) return;
+
+  registerToolboxMenu();       // 最后一次机会：ApplicationV2 到这一步必然就位了
+
+  // 版本横幅。看着多余，其实是**排障的第一现场**：
+  // 「设置只剩十几条 / 控制面板不见了」这类现象，第一个要回答的问题永远是
+  // 「在跑哪一版、init 有没有一路跑到底」。此前没有任何地方能一眼看出来，
+  // 于是排查从一开始就走错了方向。现在这一行把三件事一次说清。
+  const menuOk = toolboxMenuRegistered();
+  log(`v${game.modules.get(MODULE_ID)?.version ?? "?"} 已就绪`
+    + ` —— 补丁开关 ${REGISTERED_SETTINGS.size} 项`
+    + `，控制面板 ${menuOk ? "已注册" : "**未注册**"}`
+    + `（系统 ${game.system?.version ?? "?"} / Ember ${globalThis.ember?.version ?? "未安装"}）`);
+  if ( !menuOk ) warn("控制面板没能注册上。请把控制台里本模块的红色报错发给作者；"
+    + "补丁本身不受影响，命令表仍可用：emberCrucibleTempFix.help()");
 
   // setup 阶段可能因加载顺序没装上，这里补一次
   installActionHookPatch();
@@ -2338,6 +2389,12 @@ Hooks.once("ready", async () => {
     SETTING_GROUPS,
     /** 面板 HTML 生成器；离线测试用它验「每个开关/命令都真的渲染出来了」 */
     __renderToolbox: renderToolbox,
+    /** 面板类工厂；离线测试用它验「类建得起来、菜单注册得上」 */
+    __getToolboxClass: getToolboxClass,
+    /** 菜单注册（幂等，init/setup/ready 各试一次）；离线测试用它验重试与不抛 */
+    __registerToolboxMenu: registerToolboxMenu,
+    /** 重置类缓存（测试用：模拟 ApplicationV2 缺席） */
+    __resetToolboxClass() { _ToolboxClass = null; },
     /** 打印命令表 —— 控制台版的控制面板 */
     help: printHelp,
     /** 打开控制面板（等价于 配置与设置 → 模块设置 → 打开控制面板） */
@@ -2357,7 +2414,18 @@ Hooks.once("ready", async () => {
     /** 自检：把每个补丁当前的实际状态打印出来 */
     diagnose(actor) {
       actor ??= canvas?.tokens?.controlled?.[0]?.actor ?? game.user?.character;
-      const out = { module: MODULE_ID, actor: actor?.name ?? null, patches: {} };
+      // 版本三件套放在最前面：报 bug 时贴的就是这段，而「在跑哪一版」是第一个要问的问题。
+      // （模块目录是指向源码的目录联接，磁盘最新不代表浏览器加载的是最新。）
+      const out = {
+        module: MODULE_ID,
+        version: game.modules.get(MODULE_ID)?.version ?? "?",
+        system: game.system?.version ?? "?",
+        ember: globalThis.ember?.version ?? "(未安装)",
+        settingsRegistered: REGISTERED_SETTINGS.size,
+        panelRegistered: !!game.settings.menus?.has?.(`${MODULE_ID}.toolbox`),
+        actor: actor?.name ?? null,
+        patches: {}
+      };
       const A = globalThis.crucible?.api?.models?.CrucibleAction;
       out.patches.testsWrapped = !!A?.prototype?._tests?.__tempfixPatched;
       out.patches.actorHooksWrapped = !!CONFIG.Actor.documentClass.prototype.callActorHooks.__tempfixPatched;
@@ -2439,5 +2507,6 @@ Hooks.once("ready", async () => {
     }
   };
 
-  log(`已就绪。控制台自检：emberCrucibleTempFix.diagnose()`);
+  log(`控制面板：配置与设置 → 模块设置 → 打开控制面板；`
+    + `控制台命令表：emberCrucibleTempFix.help()`);
 });
