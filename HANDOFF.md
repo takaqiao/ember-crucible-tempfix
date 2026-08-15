@@ -40,6 +40,7 @@
 | **N5** `bewilderingGaze` | 精神攻击按护甲结算，会被「用盾牌挡下」 | 缺 willpower 标签 |
 | **N6** `antigravityStone` | 纯自身效果必须选别人才能用 | target 压根没填 |
 | **N7** `darkflameCirclet` | 用一次崩在出卡之前，资源不扣、卡不出 | composed 标签只对法术合法 |
+| **N11** 12 个符文 Spellcraft 词缀 | 拿到符文却按「未受训 −4」算；控制台刷错误 | crucible 把 training 写到了文档而非数据模型 |
 
 根因、行号级证据、以及同一份数据里的写法对照，全在 `docs/上游缺陷诊断.md`。
 **不要重新推导** —— 那份文档每条结论都带 `crucible-compiled.mjs` / `ember.mjs` 的行号。
@@ -72,10 +73,10 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**97 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**97 passed / 0 failed**。
+**136 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**136 passed / 0 failed**。
 
-桩件本身也验过 —— 变异测试把 19 处补丁逐个改回坏写法，**19/19 全部被抓住**。
+桩件本身也验过 —— 变异测试把 30 处补丁逐个改回坏写法，**30/30 全部被抓住**。
 （脚本没有入库，重跑的话照 §5 的写法现写一个即可：备份 → 字符串替换 → 跑 harness → finally 还原。）
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。
@@ -103,6 +104,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 | N4 | 对倒下的队友用「余烬之火」 | 能选中、使用按钮可点 |
 | N5 | 用「迷乱凝视」 | 打的是意志；`diagnose().bewilderingGaze.defenseType === "willpower"` |
 | N6 | 用「反重力石」 | 不需要选别人；`diagnose().antigravityStone.type === "self"` |
+| **N11** | 给角色装一件带符文 Spellcraft 词缀的物品 | `diagnose().training` 里该符文为 1；控制台不再刷 prepareGrimoire 的错误 |
 | N7 | 佩戴并投注暗焰头冠后用「暗焰射线」 | 正常出卡（控制台可能仍有一条 initialize 的 console.error，那是补不掉的化妆问题） |
 | — | 控制台 | 无未捕获异常；关掉任一开关后 `diagnose().patches.active` 里对应项消失 |
 
@@ -110,7 +112,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 4. 已知的不确定处（**别当成已验证**）
 
-1. **全部 12 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
+1. **全部 18 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
    这是当前最大的风险面，也是下一步唯一该做的事。
 2. **N2 的第三条加成（威吓 +2 骰运）没有补。**
    `rollBonuses` 每轮被重置成恰好 `{damage:{}, boons:{}, banes:{}}`（`:41179`），
@@ -149,7 +151,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 6. 下一步（按顺序）
 
-1. **开世界跑第 3 节那张表。** 12 条补丁一条真实验证都没有，这是唯一该先做的事。
+1. **开世界跑第 3 节那张表。** 18 条补丁一条真实验证都没有，这是唯一该先做的事。
 2. 按实测结果订正本文件第 4 节。
 3. 提两份 issue（清单已写好，见 `docs/上游缺陷诊断.md` 末尾）：
    一份给 `foundryvtt/crucible`（3 条），一份给 Mage Hand Press（8 条）。

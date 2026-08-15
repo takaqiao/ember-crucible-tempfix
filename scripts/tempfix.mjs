@@ -595,6 +595,172 @@ ACTION_PATCHES.darkflameCirclet = {
 };
 
 /* -------------------------------------------- */
+/*  C 系列：crucible 自身的缺陷                     */
+/* -------------------------------------------- */
+
+/**
+ * C4「翻滚穿越」的目标阵营写反了。
+ *
+ * `crucible.talent > tumblethrough000 > tumble` 的 `target.scope` 是 **2 (ALLIES)**，
+ * 而描述两次点名 enemy（「穿过目标敌人的格子」）。后果：选中敌人点它 →
+ * 目标条目标红 InvalidTargetScope（`:19686`），动作放不出来；只有选队友才能用。
+ *
+ * ⚠ **必须挂 `initialize` 而不是 `prepare`** —— crucible 自己在 `:10958` 定义了
+ * `HOOKS$6.tumble`（含 prepare，设 `movement.strength = POWERFUL`），
+ * 提供同名钩子会把它顶掉（见顶部前提 ②）。这正是 P4 犯过的错。
+ */
+ACTION_PATCHES.tumble = {
+  initialize() {
+    if ( this.target?.type !== "single" ) return;                 // 归属判据
+    const S = globalThis.SYSTEM?.ACTION?.TARGET_SCOPES ?? { ALLIES: 2, ENEMIES: 3 };
+    if ( this.target.scope !== S.ALLIES ) return;                 // 上游改好了就别动
+    this.target.scope = S.ENEMIES;
+  }
+};
+
+/**
+ * C5「黎明信标」是 pulse 区域却把 scope 写成 **1 (SELF)**。
+ *
+ * 实测数据：`target = {type:"pulse", scope:1, size:60}`。
+ * 区域取目标那条路径（`#acquireTargetsFromRegion` `:19620`）**没有单体路径那样的空集保护**
+ * （对照 `:19686`），于是一个目标都取不到：60 尺光柱画出来了，聊天卡上零目标零骰子，
+ * 站在正中央的敌人不会被致盲，行动与专注全打水漂。
+ *
+ * crucible 与 ember 都没有为 `dawnBeacon` 注册任何钩子（两份源码 grep 均 0 命中），
+ * 所以这里用哪个钩子名都是纯追加，不会顶掉谁。
+ */
+ACTION_PATCHES.dawnBeacon = {
+  initialize() {
+    if ( this.target?.type !== "pulse" ) return;                  // 归属判据
+    const S = globalThis.SYSTEM?.ACTION?.TARGET_SCOPES ?? { SELF: 1, ENEMIES: 3 };
+    if ( this.target.scope !== S.SELF ) return;                   // 上游改好了就别动
+    this.target.scope = S.ENEMIES;
+  }
+};
+
+/**
+ * X1 两条区域伤害动作**缺任何提供 `roll()` 的标签**，描述里承诺的伤害完全不会发生。
+ *
+ *  - `repugnantPustules`（crucible 敌手天赋）：pulse size 3，
+ *    tags `[reaction, weakened, reflex, corruption, toughness]`
+ *  - `abyssalRemains`（ember 敌手）：pulse size 4，tags `[weakened, reflex, corruption]`
+ *
+ * 两者都带 `reflex`（防御类型）与伤害类型标签，唯独没有 `generic` / `strike` / `spell` / `hazard`
+ * 这类**提供 roll 实现**的标签 —— `_roll()`（`:20519`）因此调不到任何东西。
+ *
+ * ⚠ 与 P4 的区别（这是本条能做的唯一理由）：
+ * P4 那次错在「数据里没有 actionHooks ⇒ 没自动化」，而 ember 其实在**代码里**注册了钩子。
+ * 这两条我按教训逐个 grep 过 —— `crucible-compiled.mjs` 与 `ember.mjs` 里
+ * `HOOKS*.repugnantPustules` / `HOOKS*.abyssalRemains` **都是 0 命中**，
+ * 确实没有任何代码侧自动化。所以补 `generic` 是把缺的那一环补上，不是叠加。
+ */
+const missingRollProviderPatch = {
+  initialize() {
+    if ( this.target?.type !== "pulse" ) return;                  // 归属判据
+    // 上游任何时候补了 roll 提供者，这里就自动退让
+    for ( const t of ["generic", "strike", "spell", "hazard", "summon"] ) {
+      if ( this.tags.has(t) ) return;
+    }
+    this.tags.add("generic");
+  }
+};
+ACTION_PATCHES.repugnantPustules = missingRollProviderPatch;
+ACTION_PATCHES.abyssalRemains = missingRollProviderPatch;
+
+/**
+ * C1「吞噬」的效果 ID 是 **17 字符** —— crucible 自家的 N1。
+ *
+ * `crucible-compiled.mjs:10530` `_SWALLOWED_EFFECT_ID: "swallowed00000000"`
+ * （"swallowed" 9 + 8 个 0 = 17），而 `DocumentIdField` 要求恰好 16。
+ *
+ * 链路与 N1 abyssMarkUnmaking 逐点同构：
+ *  ① `swallow.prepare()`（`:10538`）`this.effects.find(e => e.scope === ENEMIES)` ——
+ *     **实测数据里第 0 条效果的 scope 就是 3**（statuses `["restrained","blinded"]`），find 必中。
+ *     （旧文档 §7 写的「因 scope 未设而潜伏」是没查数据得出的，**已推翻**。）
+ *  ② `:19811` `_id: _id || getEffectId(...)` —— 硬编码值 truthy，压过自动生成。
+ *  ③ 建效果时被 `DocumentIdField._validateType` 打回，**崩在 `toMessage()`（:21376）之前**。
+ *
+ * 改常量而不是照抄钩子：回读端 `regurgitate.postActivate`（`:10598`/`:10600`）读的是
+ * **同一个引用**，一次赋值两端同时修好。世界里也不可能存在旧的 17 字符效果（从来没创建成功过），
+ * 所以不需要 N1 那种新旧双认。
+ *
+ * 影响面：本机 20 个合集、按 `item.name === "Swallow"` 精确匹配，命中 **5 个 adversary**
+ * （全在 ember.crucible-adventure：Mootap ×2 / Sarracenias / Obsidian Vine Outgrowth / Towering Obsidian Vine）。
+ */
+const SWALLOWED_ID_BAD = "swallowed00000000";   // 17，crucible 0.10.1 的原值
+const SWALLOWED_ID = "swallowed0000000";        // 16
+
+/** 按开关改写 / 还原 swallow 的效果 ID 常量。可逆，所以能挂在 applyToggles 上。 */
+function applySwallowEffectId(enabled) {
+  const sw = globalThis.crucible?.api?.hooks?.action?.swallow;
+  const cur = sw?._SWALLOWED_EFFECT_ID;
+  if ( typeof cur !== "string" ) return;                 // 上游改了结构 → 退让
+
+  if ( !enabled ) {
+    if ( cur === SWALLOWED_ID ) sw._SWALLOWED_EFFECT_ID = SWALLOWED_ID_BAD;   // 关掉 → 还原
+    return;
+  }
+  if ( cur.length === 16 ) return;                       // 上游修好了 → 退让
+  if ( cur !== SWALLOWED_ID_BAD ) {                      // 变成了另一个非法值 → 不猜
+    const key = "swallow._SWALLOWED_EFFECT_ID";
+    if ( !warnedGuards.has(key) ) {
+      warnedGuards.add(key);
+      warn(`${key} 变成了未知值「${cur}」，C1 自动退让`);
+    }
+    return;
+  }
+  sw._SWALLOWED_EFFECT_ID = SWALLOWED_ID;
+  if ( sw._SWALLOWED_EFFECT_ID !== SWALLOWED_ID ) {      // 对象被冻结过 → 老实报错
+    warn("crucible.api.hooks.action.swallow 不可写，C1 未生效");
+    return;
+  }
+  log("已修正 swallow 的效果 ID");
+}
+
+/* -------------------------------------------- */
+/*  D 系列：描述与数据的伤害类型不一致               */
+/* -------------------------------------------- */
+
+/**
+ * **这一类是上游自己在修的**，所以判据可靠：`master` 的 commit `2cfed5dd`
+ * 「Change damage type of noxious spray from electricity to poison **as mentioned in the description**」
+ * —— 上游用「描述里写的是什么」当判据改数据。我们照同一判据把本机剩下的几条一并修上。
+ *
+ * 机制：伤害类型标签的 initialize 是 `this.usage.damageType ??= id`（`:4662`），
+ * **先到先得**；而标签永远排在钩子之前（顶部前提 ③），所以我们在 `prepare` 里用裸 `=`
+ * 就是最后一个写入者。`generic.prepare` 的 `damageType ??= "void"`（`:4321`）也压不过。
+ *
+ * | 动作 | 现状 | 描述写的 | 出处 |
+ * |---|---|---|---|
+ * | `noxiousSpray` | tags 含 `electricity` | toxic discharge + 附带 poisoned | 上游已改（`2cfed5dd`） |
+ * | `selfDestruct` | 同时带 `piercing` 与 `fire` | "consumed in a **fiery** explosion" | 本机反查 |
+ * | `devourThoughts` | **一个伤害类型标签都没有** → 落回天生武器的钝击 | "**Psychic** damage" | 本机反查（playtest 包） |
+ *
+ * 每条的归属判据都是「那个写错的标签还在不在」——上游一改，判据不成立，补丁自动空转。
+ *
+ * 注：`distract` 也在反查里被点过名，但**故意不修** —— 它的描述
+ * 「Deception based Skill Attack against the Willpower defense」本身是自洽的，
+ * 证据不足以判定是缺陷。
+ */
+const DAMAGE_TYPE_FIXES = {
+  // 写错的标签还在 → 才修
+  noxiousSpray: { to: "poison", when(a) { return a.tags.has("electricity"); } },
+  selfDestruct: { to: "fire", when(a) { return a.tags.has("piercing") && a.tags.has("fire"); } },
+  // 这条没有任何伤害类型标签，判据改成「还没有 psychic 标签」
+  devourThoughts: { to: "psychic", when(a) { return !a.tags.has("psychic"); } }
+};
+
+for ( const [actionId, cfg] of Object.entries(DAMAGE_TYPE_FIXES) ) {
+  ACTION_PATCHES[actionId] = {
+    prepare() {
+      if ( this.usage.damageType === cfg.to ) return;   // 已经对了（上游修好了）→ 不动
+      if ( !cfg.when(this) ) return;                    // 归属判据不成立 → 不动
+      this.usage.damageType = cfg.to;
+    }
+  };
+}
+
+/* -------------------------------------------- */
 /*  P3 + N9：符文小戏法与训练等级                   */
 /* -------------------------------------------- */
 
@@ -782,6 +948,70 @@ function installHookOverrides() {
 }
 
 /* -------------------------------------------- */
+/*  N11：符文 Spellcraft 词缀的训练等级             */
+/* -------------------------------------------- */
+
+/**
+ * crucible 自己的 bug（`crucible-compiled.mjs:13668-13675`）：
+ *
+ *   for ( const runeId of Object.keys(RUNES) ) {
+ *     HOOKS[`${runeId}Spellcraft`] = {
+ *       prepareGrimoire(item, grimoire) {
+ *         grimoire.runeIds.push(runeId);
+ *         this.training[runeId] = Math.max(this.training[runeId] ?? 0, 1);   // ← 这里
+ *       }
+ *     };
+ *   }
+ *
+ * `callActorHooks`（`:36571`）是 `fn.call(this, item, ...args)`，`this` 绑定的是
+ * **CrucibleActor 文档**；而 `training` 只存在于数据模型上，文档类**没有这个 getter**
+ * （全部 getter 里找不到 `get training()`）。于是 `this.training[runeId]` 抛 TypeError。
+ *
+ * 后果不是「建卡失败」而是**静默降级**：`prepareGrimoire` 的 hook 配置没有 `throws`（`:1168`），
+ * 异常被 `callActorHooks` 的 try/catch 吞成 console.error；而抛出点在
+ * `grimoire.runeIds.push(runeId)` **之后** —— 所以符文知识拿到了、训练等级没设上，
+ * 角色施放该符文的法术时按**未受训 −4**（`:6834`）结算，每次数据准备还刷一条控制台错误。
+ *
+ * 影响面：12 个符文 Spellcraft 词缀（`crucible.affixes` 里 `system.identifier` 与钩子键逐一对应，
+ * 无补零问题）。词缀钩子按 `affix.system.identifier` 查表（`:42078` / `:23113`）。
+ *
+ * 修法：不硬编码符文清单，而是**按源码特征扫出所有中招的条目**再逐个替换 ——
+ * 上游修好之后特征串消失，自动不再命中。
+ * @returns {boolean}
+ */
+function installAffixTrainingFix() {
+  let on = true;
+  try { on = game.settings.get(MODULE_ID, "patchAffixTraining"); } catch { /* 尚未注册 */ }
+  if ( !on ) return false;
+
+  const affix = globalThis.crucible?.api?.hooks?.affix;
+  if ( !affix ) { warn("crucible.api.hooks.affix 不可用，N11 未安装"); return false; }
+
+  let n = 0;
+  for ( const [id, cfg] of Object.entries(affix) ) {
+    const fn = cfg?.prepareGrimoire;
+    if ( !(fn instanceof Function) || fn.__tempfixOverride ) continue;
+    // 只碰真的写了 `this.training[` 的那些 —— 上游修好后这个特征就没了
+    if ( !String(fn).includes("this.training[") ) continue;
+    const runeId = id.replace(/Spellcraft$/, "");
+    if ( !runeId || (runeId === id) ) continue;               // 键形不对就别猜
+
+    const patched = function prepareGrimoire(item, grimoire) {
+      grimoire.runeIds.push(runeId);
+      // 唯一的改动：写数据模型而不是文档
+      const training = this.system?.training;
+      if ( training ) training[runeId] = Math.max(training[runeId] ?? 0, 1);
+    };
+    patched.__tempfixOverride = true;
+    patched.__tempfixOriginal = fn;
+    cfg.prepareGrimoire = patched;
+    n++;
+  }
+  if ( n ) log(`N11：修正了 ${n} 个符文 Spellcraft 词缀的训练等级写入`);
+  return true;
+}
+
+/* -------------------------------------------- */
 /*  安装：角色数据准备钩子                          */
 /* -------------------------------------------- */
 
@@ -848,7 +1078,11 @@ const PATCH_DEFS = [
   { setting: "patchSparkScope", actionIds: ["heartSparkOfEmber"] },
   { setting: "patchBewilderingGaze", actionIds: ["bewilderingGaze"] },
   { setting: "patchAntigravityStone", actionIds: ["antigravityStone"] },
-  { setting: "patchDarkflameCirclet", actionIds: ["darkflameCirclet"] }
+  { setting: "patchDarkflameCirclet", actionIds: ["darkflameCirclet"] },
+  { setting: "patchTumbleScope", actionIds: ["tumble"] },
+  { setting: "patchDawnBeaconScope", actionIds: ["dawnBeacon"] },
+  { setting: "patchMissingRollProvider", actionIds: ["repugnantPustules", "abyssalRemains"] },
+  { setting: "patchDamageTypes", actionIds: ["noxiousSpray", "selfDestruct", "devourThoughts"] }
 ];
 
 /** actionId → 补丁体的原始引用（applyToggles 会按开关把它们放回/摘掉） */
@@ -862,20 +1096,59 @@ const UNIVERSAL_DEFS = [
   { setting: "patchTurnsDuration", body: turnsDurationPatch }
 ];
 
+/**
+ * 版本闸门：某条补丁在上游哪个版本被修好。
+ *
+ * 装的还是 0.10.1 的人**仍然需要**这些补丁，所以这是**加上限**而不是删除 ——
+ * 系统版本一旦追上 `fixedIn`，该条自动停用并在控制台说明一次。
+ *
+ * 这是本模块的第**三**种闸门，三种各管一段：
+ *  - **数据形状**（P2 看 `target.type`、N3 看 `duration.units`、N10 读 `_preCreate` 源码）
+ *    —— 管「上游改了数据/校验」，最灵敏，但只对能从运行时看出来的改动有效。
+ *  - **`__guard` 特征串**（P1、HOOK_OVERRIDES）—— 管「上游重写了我们要顶掉的那段实现」。
+ *  - **版本上限**（本节）—— 管「上游修好了，但改动从运行时看不出来」。
+ *
+ * @param {string} [fixedIn]  上游修好它的系统版本；空表示尚未修好
+ * @returns {boolean}         这条补丁是否已被上游取代
+ */
+function supersededByUpstream(fixedIn) {
+  if ( !fixedIn ) return false;
+  const current = globalThis.game?.system?.version;
+  if ( !current ) return false;
+  const iu = globalThis.foundry?.utils?.isNewerVersion;
+  if ( typeof iu !== "function" ) return false;
+  // isNewerVersion(v1, v0) = v1 是否比 v0 新。相等时返回 false，
+  // 所以这里要「当前版本 >= fixedIn」需写成 !(fixedIn 比 current 新)。
+  return !iu(fixedIn, current);
+}
+
+/** 已经因版本上限停用过、并且已经说明过一次的补丁（避免每次改设置都刷屏） */
+const announcedSuperseded = new Set();
+
 function applyToggles() {
   const on = key => {
     try { return game.settings.get(MODULE_ID, key); } catch { return true; }   // 尚未注册时按开处理
   };
-  for ( const { setting, actionIds } of PATCH_DEFS ) {
-    const enabled = on(setting);
-    for ( const id of actionIds ) {
+  const active = ({ setting, fixedIn }) => {
+    if ( !on(setting) ) return false;
+    if ( !supersededByUpstream(fixedIn) ) return true;
+    if ( !announcedSuperseded.has(setting) ) {
+      announcedSuperseded.add(setting);
+      log(`${setting}：上游 ${fixedIn} 已修好，本补丁自动停用`);
+    }
+    return false;
+  };
+  for ( const def of PATCH_DEFS ) {
+    const enabled = active(def);
+    for ( const id of def.actionIds ) {
       if ( enabled ) ACTION_PATCHES[id] = PATCH_BODIES[id];
       else delete ACTION_PATCHES[id];
     }
   }
+  applySwallowEffectId(active({ setting: "patchSwallowEffectId" }));
   UNIVERSAL_PATCHES.length = 0;
-  for ( const { setting, body } of UNIVERSAL_DEFS ) {
-    if ( on(setting) ) UNIVERSAL_PATCHES.push(body);
+  for ( const def of UNIVERSAL_DEFS ) {
+    if ( active(def) ) UNIVERSAL_PATCHES.push(def.body);
   }
 }
 
@@ -933,6 +1206,18 @@ Hooks.once("init", () => {
     "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
   bool("patchAbyssMark", "N1 修正深渊「湮灭之印」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
+  bool("patchDamageTypes", "D 系列 修正描述与数据不符的伤害类型",
+    "三条动作的伤害类型与自己的描述矛盾：「毒液喷吐」结算成电击（上游已在开发版改成毒），「自毁」的烈焰爆炸结算成穿刺，「吞噬思绪」的灵能伤害落回天生武器的钝击。后果是抗性算错——吃火抗的角色挡不住火焰爆炸，吃钝击抗性的重甲反而能挡下纯精神攻击。开启后按描述修正。");
+  bool("patchSwallowEffectId", "C1 修正「吞噬」的非法效果 ID（crucible 自身缺陷）",
+    "crucible 给 Swallow 硬编码的效果 id 有 17 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣，配套的「反刍」也永远找不到要删的效果。开启后换成合法的 16 位 ID。");
+  bool("patchTumbleScope", "C4 修正「翻滚穿越」的目标阵营（crucible 自身缺陷）",
+    "目标阵营写成了「盟友」，而描述两次点名敌人。后果是选中敌人时提示阵营不合法、动作放不出来，只有选队友才能用。开启后改为敌人。");
+  bool("patchDawnBeaconScope", "C5 修正「黎明信标」的目标阵营（crucible 自身缺陷）",
+    "这是个 60 尺的 pulse 区域，作用域却写成了「自身」，导致区域取目标时一个都取不到——光柱画出来了，聊天卡上零目标零骰子。开启后改为敌人。");
+  bool("patchMissingRollProvider", "X1 给两条区域伤害动作补上掷骰实现",
+    "「脓疱迸裂」与「深渊残渣」都带防御与伤害类型标签，唯独缺少任何提供掷骰实现的标签，导致描述里承诺的伤害完全不会发生。已逐条确认这两个动作在 crucible 与 ember 的钩子注册表里都没有任何代码侧自动化。开启后补上通用掷骰标签。");
+  bool("patchAffixTraining", "N11 修正符文词缀不设训练等级",
+    "crucible 自己的 bug：12 个符文 Spellcraft 词缀的钩子把训练等级写到了 actor <em>文档</em>上，而那里没有这个字段，于是抛异常被吞掉——<strong>符文知识拿到了，训练等级没设上</strong>，施放该符文的法术按「未受训 −4」结算，控制台每次数据准备刷一条错误。开启后改写到数据模型上。");
   bool("patchTurnsDuration", "N10 修正被系统拒绝创建的效果时长（影响面最大）",
     "19 个动作的效果时长写的是旧的 <code>turns</code> 单位，而系统在创建效果时会直接拒绝这个单位——<strong>聊天卡写着「获得效果」，角色身上却什么都没有</strong>。<strong>九个血统的招牌变身全部中招</strong>（雷法姆变身/结晶创伤/极限代谢/活石/律动/荆棘皮/顽强/不懈猎手/泽夫三面具）。开启后把单位换成「轮」，数值不变。注意这是解释而非还原：上游没有 turns 这个单位，原作者想要多久无从考证。");
   bool("patchEffectChanges", "N2 修正「强化护盾」/「雷法姆变身」丢失的加值",
@@ -964,6 +1249,7 @@ Hooks.once("setup", () => {
   applyToggles();
   installActionHookPatch();
   installActorHookPatch();
+  installAffixTrainingFix();
   // ember 在 init 注册钩子，而 #prepareHooks 在角色数据准备时才快照 —— setup 正好夹在中间
   installHookOverrides();
 });
@@ -974,6 +1260,7 @@ Hooks.once("ready", async () => {
   // setup 阶段可能因加载顺序没装上，这里补一次
   installActionHookPatch();
   installActorHookPatch();
+  installAffixTrainingFix();
   installHookOverrides();
 
   await loadCantripSources();
@@ -984,8 +1271,11 @@ Hooks.once("ready", async () => {
     CANTRIP_SOURCES,
     ACTION_PATCHES,
     UNIVERSAL_PATCHES,
+    PATCH_DEFS,
+    UNIVERSAL_DEFS,
     HOOK_OVERRIDES,
     reprepareActors,
+    installAffixTrainingFix,
     /** 让 N10 的上游 guard 重新检测一次（测试用；正常运行时缓存一次即可） */
     resetTurnsGuard() { _rejectsTurns = null; },
     /** 自检：把每个补丁当前的实际状态打印出来 */

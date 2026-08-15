@@ -37,7 +37,7 @@ globalThis.fromUuidSync = uuid => UUID_REGISTRY.get(uuid) ?? null;
 
 globalThis.game = {
   ready: false,
-  system: { id: "crucible" },
+  system: { id: "crucible", version: "0.10.1" },
   i18n: { format: (k, d) => `${k}:${JSON.stringify(d)}` },
   settings: {
     register(mod, key, cfg) { const k = `${mod}.${key}`; settingDefs.set(k, cfg); settings.set(k, cfg.default); },
@@ -55,6 +55,9 @@ globalThis.game = {
 };
 
 let renderCount = 0;
+let warnCount = 0;
+const _realWarn = console.warn;
+console.warn = (...a) => { warnCount++; _realWarn(...a); };
 globalThis.ui = {
   actors: { render() {} },
   // V1 窗口表（crucible 里其实一个都没有，保留是为了断言两个循环都跑到）
@@ -67,8 +70,21 @@ const setProperty = (obj, path, value) => {
   for (const p of parts.slice(0, -1)) cur = (cur[p] ??= {});
   cur[parts.at(-1)] = value;
 };
+/** 复刻核心 `foundry.utils.isNewerVersion`（foundry.mjs:2491）：v1 是否比 v0 新；相等返回 false。 */
+const isNewerVersion = (v1, v0) => {
+  if ((v1 === null) || (v1 === undefined)) return false;
+  if ((v0 === null) || (v0 === undefined)) return true;
+  const a = String(v1).split("."), b = String(v0).split(".");
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = Number(a[i] ?? 0), y = Number(b[i] ?? 0);
+    if (x > y) return true;
+    if (x < y) return false;
+  }
+  return false;
+};
+
 globalThis.foundry = {
-  utils: { deepClone: o => JSON.parse(JSON.stringify(o)), setProperty },
+  utils: { deepClone: o => JSON.parse(JSON.stringify(o)), setProperty, isNewerVersion },
   // T1：crucible 的角色卡全是 ApplicationV2，只活在这里
   applications: { instances: new Map([["a", { document: { documentName: "Actor" }, render() { renderCount++; } }]]) }
 };
@@ -115,7 +131,14 @@ const TAGS = {
   void: { tag: "void", prepare() { this.usage.damageType = "void"; } },
   presence: { tag: "presence" },
   morale: { tag: "morale", prepare() { this.usage.resource = "morale"; } },
-  spell: { tag: "spell" }
+  spell: { tag: "spell" },
+  // 伤害类型标签：initialize 里 ??= 先到先得（:4662）
+  electricity: { tag: "electricity", initialize() { this.usage.damageType ??= "electricity"; } },
+  piercing: { tag: "piercing", initialize() { this.usage.damageType ??= "piercing"; } },
+  fire: { tag: "fire", initialize() { this.usage.damageType ??= "fire"; } },
+  psychic: { tag: "psychic", initialize() { this.usage.damageType ??= "psychic"; } },
+  natural: { tag: "natural", prepare() { this.usage.damageType ??= "bludgeoning"; } },
+  melee: { tag: "melee" }
 };
 
 /**
@@ -271,12 +294,50 @@ globalThis.CONFIG = {
   Actor: { documentClass: CrucibleActor },
   ActiveEffect: { documentClass: CrucibleActiveEffect }
 };
+/**
+ * crucible 的符文 Spellcraft 词缀钩子（编译产物 :13668-13675）。
+ * 复刻上游那个 bug：`this` 是 **CrucibleActor 文档**（callActorHooks :36578 `fn.call(this, item, ...)`），
+ * 而文档上**没有** `training` getter（全 23 个 getter 里没这一项），于是 `this.training[runeId]` 抛 TypeError。
+ * `prepareGrimoire` 的 hook 配置没有 `throws`（:1168），所以异常被 catch 成 console.error ——
+ * 结果是 runeIds 推进去了、训练等级没设上：**拿到符文但按未受训 −4 算**。
+ */
+const HOOKS_AFFIX = {};
+for (const runeId of ["storm", "flame", "death"]) {
+  HOOKS_AFFIX[`${runeId}Spellcraft`] = {
+    prepareGrimoire(item, grimoire) {
+      grimoire.runeIds.push(runeId);
+      this.training[runeId] = Math.max(this.training[runeId] ?? 0, 1);   // ← 上游的 bug
+    }
+  };
+}
+/**
+ * crucible 的 swallow 钩子（编译产物 :10530 常量、:10538-10539 写入端）。
+ * 真实的 HOOKS.swallow 是可写的普通对象（:14044 只冻命名空间），所以这里**不能** freeze。
+ */
+HOOKS_ACTION.swallow = {
+  _SWALLOWED_EFFECT_ID: "swallowed00000000",                                  // :10530，17 字符
+  prepare() {
+    const s = this.effects.find(e => e.scope === TARGET_SCOPES.ENEMIES);       // :10538
+    if (s) s._id = HOOKS_ACTION.swallow._SWALLOWED_EFFECT_ID;                  // :10539
+  }
+};
+
+// 对照组一：id 不以 Spellcraft 结尾
+HOOKS_AFFIX.returning = { prepareGrimoire(item, grimoire) { grimoire.touched = true; } };
+// 对照组二：**id 同样以 Spellcraft 结尾**，但它是姿态词缀、不碰 training。
+// 真实数据里 40 个 Spellcraft 词缀只有 12 个是符文，其余 28 个（姿态/变形/施法方式）长这样 ——
+// 只靠 id 形状判据会把它们一并顶掉，所以源码特征串那道判据是必需的。
+HOOKS_AFFIX.arrowSpellcraft = {
+  prepareGrimoire(item, grimoire) { (grimoire.gestureIds ??= []).push("arrow"); }
+};
+
 globalThis.crucible = {
   api: {
     models: { CrucibleAction },
     // 外层 freeze、子表可写 —— ember 正是靠这一点注册进来的（:14044 / ember.mjs:126744）
     hooks: Object.freeze({
       action: HOOKS_ACTION,
+      affix: HOOKS_AFFIX,
       talent: {
         emberAbyssAttune: {
           finalizeAction: function embersFinalize() { /* 含坏 id 字面量 abyssMarkUnmak0 */ }
@@ -671,6 +732,183 @@ console.log("\nN10 的上游 guard（上游放宽后必须自动停用）");
   const b = new CrucibleAction({ id: "tyraphicTransformation", effects: [{ duration: { turns: 6 } }] }, { actor });
   b.preActivate();
   check("拦截还在时照常改写", b.effects[0].duration.units === "rounds");
+}
+
+console.log("\nN11 符文 Spellcraft 词缀的训练等级");
+{
+  // 复刻真实调用：this 绑定 actor **文档**（文档上没有 training getter）
+  const actor = new CrucibleActor("N11");
+  const call = (id, grimoire) => HOOKS_AFFIX[id].prepareGrimoire.call(actor, { name: "词缀" }, grimoire);
+
+  const g = { runeIds: [] };
+  check("补丁装上后不再抛 TypeError", throws(() => call("stormSpellcraft", g)) === null);
+  check("符文仍然被授予", g.runeIds.includes("storm"));
+  check("训练等级这次真的设上了", actor.system.training.storm === 1, JSON.stringify(actor.system.training));
+
+  const g2 = { runeIds: [] };
+  call("flameSpellcraft", g2);
+  call("deathSpellcraft", g2);
+  check("12 个符文词缀是同一族，全部被覆盖", actor.system.training.flame === 1 && actor.system.training.death === 1);
+
+  // 反向：已有更高等级不降级
+  actor.system.training.storm = 3;
+  call("stormSpellcraft", { runeIds: [] });
+  check("已有更高等级 → 取 max 不降级", actor.system.training.storm === 3, String(actor.system.training.storm));
+
+  // 反向：不碰 training 的词缀钩子不被替换
+  check("不碰 training 的词缀钩子原样保留", !HOOKS_AFFIX.returning.prepareGrimoire.__tempfixOverride);
+  const g3 = {};
+  HOOKS_AFFIX.returning.prepareGrimoire.call(actor, {}, g3);
+  check("对照组照常工作", g3.touched === true);
+
+  // 反向（关键）：**同样以 Spellcraft 结尾**的姿态词缀绝不能被顶掉 ——
+  // 真实数据里 40 个 Spellcraft 词缀只有 12 个是符文，只靠 id 形状判据会误伤另外 28 个
+  check("姿态类 Spellcraft 词缀没被替换", !HOOKS_AFFIX.arrowSpellcraft.prepareGrimoire.__tempfixOverride);
+  const g4 = { runeIds: [] };
+  HOOKS_AFFIX.arrowSpellcraft.prepareGrimoire.call(actor, {}, g4);
+  check("姿态词缀仍然授予姿态而不是符文", g4.gestureIds?.includes("arrow") && !g4.runeIds.length,
+    JSON.stringify(g4));
+
+  // 反向：重复安装是安全的
+  const before = HOOKS_AFFIX.stormSpellcraft.prepareGrimoire;
+  globalThis.emberCrucibleTempFix.installAffixTrainingFix();
+  check("重复安装不会二次包装", HOOKS_AFFIX.stormSpellcraft.prepareGrimoire === before);
+}
+
+console.log("\nC 系列：crucible 自身的缺陷");
+{
+  const actor = new CrucibleActor("C");
+
+  // C4 翻滚穿越：scope ALLIES → ENEMIES，且**不能**顶掉 crucible 自己的 tumble.prepare
+  const tumble = new CrucibleAction({ id: "tumble", target: { type: "single", scope: TARGET_SCOPES.ALLIES } }, { actor });
+  tumble.prepare();
+  check("C4 ALLIES → ENEMIES", tumble.target.scope === TARGET_SCOPES.ENEMIES, String(tumble.target.scope));
+  check("C4 用的是 initialize，没顶掉上游的 tumble.prepare",
+    ACTIONS().tumble.prepare === undefined && typeof ACTIONS().tumble.initialize === "function");
+  const tumbleFixed = new CrucibleAction({ id: "tumble", target: { type: "single", scope: TARGET_SCOPES.ENEMIES } }, { actor });
+  tumbleFixed.prepare();
+  check("C4 上游改好后不再插手（幂等）", tumbleFixed.target.scope === TARGET_SCOPES.ENEMIES);
+
+  // C5 黎明信标：pulse + SELF → ENEMIES
+  const beacon = new CrucibleAction({ id: "dawnBeacon", target: { type: "pulse", scope: TARGET_SCOPES.SELF, size: 60 } }, { actor });
+  beacon.prepare();
+  check("C5 pulse+SELF → ENEMIES", beacon.target.scope === TARGET_SCOPES.ENEMIES, String(beacon.target.scope));
+  const notPulse = new CrucibleAction({ id: "dawnBeacon", target: { type: "single", scope: TARGET_SCOPES.SELF } }, { actor });
+  notPulse.prepare();
+  check("C5 归属判据：不是 pulse 就不动", notPulse.target.scope === TARGET_SCOPES.SELF);
+
+  // X1 补掷骰实现
+  const pust = new CrucibleAction({ id: "repugnantPustules", target: { type: "pulse", size: 3 }, tags: ["reaction", "weakened", "reflex"] }, { actor });
+  pust.prepare();
+  check("X1 补上了 generic", pust.tags.has("generic"));
+  check("X1 原有标签一个不少", pust.tags.has("reflex") && pust.tags.has("weakened") && pust.tags.has("reaction"));
+  const remains = new CrucibleAction({ id: "abyssalRemains", target: { type: "pulse", size: 4 }, tags: ["weakened", "reflex"] }, { actor });
+  remains.prepare();
+  check("X1 两条动作共用同一份补丁体", remains.tags.has("generic"));
+  const already = new CrucibleAction({ id: "abyssalRemains", target: { type: "pulse" }, tags: ["spell", "reflex"] }, { actor });
+  const n0 = already.tags.size;
+  already.prepare();
+  check("X1 上游已有别的 roll 提供者（spell）→ 不再加 generic", (already.tags.size === n0) && !already.tags.has("generic"));
+
+  // C1 吞噬的效果 ID（常量改写，可逆）
+  const sw = crucible.api.hooks.action.swallow;
+  check("C1 常量已换成合法的 16 字符", /^[a-zA-Z0-9]{16}$/.test(sw._SWALLOWED_EFFECT_ID), sw._SWALLOWED_EFFECT_ID);
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", false);
+  check("C1 关掉开关 → 还原成上游 17 字符原值", sw._SWALLOWED_EFFECT_ID === "swallowed00000000", sw._SWALLOWED_EFFECT_ID);
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
+  check("C1 再打开 → 重新修正", sw._SWALLOWED_EFFECT_ID.length === 16);
+
+  // ⚠ 顺序要紧：警告是按 key 去重的（warnedGuards），所以「不该报警」这条必须排在
+  //   「未知非法值会报警」**之前**，否则被去重吃掉、断言永远打不响（变异测试抓出来的）。
+  const warnsBefore = warnCount;
+  sw._SWALLOWED_EFFECT_ID = "swallowed0000000";                                    // 上游修成了和我们一样的 16 位值
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", false);
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
+  check("C1 上游修好后不再改写", sw._SWALLOWED_EFFECT_ID === "swallowed0000000");
+  check("C1 上游修好后不该报警（长度判据的意义）", warnCount === warnsBefore, warnCount + " vs " + warnsBefore);
+
+  const warnsBefore2 = warnCount;
+  sw._SWALLOWED_EFFECT_ID = "gulped000000000000";                                  // 未知非法值（18）
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", false);
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
+  check("C1 遇到未知非法值 → 退让不猜", sw._SWALLOWED_EFFECT_ID === "gulped000000000000");
+  check("C1 未知非法值会报警一次", warnCount > warnsBefore2);
+  sw._SWALLOWED_EFFECT_ID = "swallowed00000000";
+  setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
+}
+
+console.log("\nD 系列：描述与数据的伤害类型不一致");
+{
+  const actor = new CrucibleActor("D");
+
+  const spray = new CrucibleAction({ id: "noxiousSpray", tags: ["melee", "natural", "reflex", "electricity"] }, { actor });
+  spray.prepare();
+  check("noxiousSpray 电击 → 毒（与上游 2cfed5dd 一致）", spray.usage.damageType === "poison", spray.usage.damageType);
+
+  const sd = new CrucibleAction({ id: "selfDestruct", tags: ["generic", "fortitude", "piercing", "fire"] }, { actor });
+  sd.prepare();
+  check("selfDestruct 穿刺 → 火焰", sd.usage.damageType === "fire", sd.usage.damageType);
+
+  const dt = new CrucibleAction({ id: "devourThoughts", tags: ["melee", "natural", "weakened"] }, { actor });
+  dt.prepare();
+  check("devourThoughts 钝击 → 灵能", dt.usage.damageType === "psychic", dt.usage.damageType);
+
+  // 反向：上游把写错的标签删掉之后，归属判据不成立 → 补丁不插手
+  const fixed = new CrucibleAction({ id: "noxiousSpray", tags: ["melee", "natural", "reflex"] }, { actor });
+  fixed.prepare();
+  check("上游删掉 electricity 标签 → 补丁不插手", fixed.usage.damageType !== "poison", String(fixed.usage.damageType));
+
+  // 反向：上游补上了正确标签 → 幂等
+  const already = new CrucibleAction({ id: "devourThoughts", tags: ["melee", "psychic"] }, { actor });
+  already.prepare();
+  check("上游补了 psychic 标签 → 幂等", already.usage.damageType === "psychic");
+
+  // 反向：只带 fire 不带 piercing 的动作不受 selfDestruct 那条影响（归属判据要两个都在）
+  const onlyFire = new CrucibleAction({ id: "selfDestruct", tags: ["generic", "fire"] }, { actor });
+  onlyFire.prepare();
+  check("selfDestruct 判据要 piercing+fire 同时在", onlyFire.usage.damageType === "fire");
+}
+
+console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍然要能用）");
+{
+  const ACT = () => globalThis.emberCrucibleTempFix.ACTION_PATCHES;
+  const defs = globalThis.emberCrucibleTempFix.PATCH_DEFS;
+  const p2 = defs.find(d => d.setting === "patchSuddenBite");
+
+  check("没有 fixedIn → 照常生效", !!ACT().suddenBite);
+
+  p2.fixedIn = "0.11.0";                     // 上游将在 0.11.0 修好，但我们装的是 0.10.1
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("当前版本低于 fixedIn → 仍然生效", !!ACT().suddenBite);
+
+  p2.fixedIn = "0.10.1";                     // 正好等于当前版本 = 已经修好了
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("当前版本等于 fixedIn → 自动停用", ACT().suddenBite === undefined);
+
+  p2.fixedIn = "0.10.0";                     // 更早就修好了
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("当前版本高于 fixedIn → 自动停用", ACT().suddenBite === undefined);
+
+  delete p2.fixedIn;
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("撤掉 fixedIn → 恢复生效", !!ACT().suddenBite);
+
+  const realVersion = game.system.version;
+  delete game.system.version;
+  p2.fixedIn = "0.10.0";
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("读不到系统版本 → 保守地继续生效", !!ACT().suddenBite);
+  game.system.version = realVersion;
+
+  // 另一条回退路径：核心的比较函数不在（旧版 Foundry / API 改名）
+  const realCmp = foundry.utils.isNewerVersion;
+  delete foundry.utils.isNewerVersion;
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("读不到比较 API → 同样保守地继续生效", !!ACT().suddenBite);
+  foundry.utils.isNewerVersion = realCmp;
+
+  delete p2.fixedIn;
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
 }
 
 console.log("\nT1 角色卡刷新");
