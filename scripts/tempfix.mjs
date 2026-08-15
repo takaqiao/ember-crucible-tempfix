@@ -1031,6 +1031,85 @@ PROTOTYPE_PATCHES.push({
   }
 });
 
+/**
+ * I4（上游 issue **#1404**）：**位移类动作重复 prepare()，标签加成被累加。**
+ *
+ * `_configureUsage()`（`:20283`）的注释白纸黑字写着
+ * 「Reset cost fields to their source values so that **repeated prepare() calls do not accumulate costs**」，
+ * 但它**只重置了 cost**（action/focus/heroism/hands）。`usage.bonuses` 里
+ * `damageBonus` / `multiplier` / `criticalSuccessThreshold` / `enchantment` 一个都没碰
+ * （只有 `ability` 与 `skill` 被无条件重算，`:20297`）。
+ *
+ * 而 `usage.bonuses` 的归零**只发生在 `_prepareData()`**（`:19107` 的 Reset bonuses 块），
+ * 那个方法只由 `_initialize()` 调用，`prepare()` 自己不调。
+ *
+ * 于是遇上 `empowered` 这种累加写法（`:4432` `damageBonus += 6`），
+ * 位移规划流程里的第二次 `prepare()`（`:3085`）就把加成叠了一遍 ——
+ * 飞踢的伤害比条目描述**多 6 点**；如果规划出的路径非法，还会
+ * `delete this.action.movement; this.action.prepare();`（`:3096`）再叠一次，变成 **+18**。
+ *
+ * 修法：包 `prepare()`，在委托给原实现**之前**把 `usage.bonuses` 恢复成
+ * `_prepareData()` 里那份「原始态」—— 六个字段逐字对齐上游自己的归零块，不多不少。
+ * 第一次 prepare 时它是空操作（本来就是零），从第二次起才起作用。
+ */
+const PRISTINE_BONUSES = Object.freeze({
+  ability: 0, skill: 0, enchantment: 0, damageBonus: 0, multiplier: 1, criticalSuccessThreshold: 0
+});
+
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleAction#prepare（I4 重复 prepare 累加加成）",
+  setting: "patchRepeatedPrepare",
+  resolve: () => globalThis.crucible?.api?.models?.CrucibleAction,
+  method: "prepare",
+  // 闸门认上游那句注释：它一旦把 bonuses 也放进重置块，注释多半会跟着改，本条自动退让
+  guard: { method: "_configureUsage", includes: "do not accumulate costs" },
+  wrap: (orig, setting) => function prepare(...args) {
+    if ( settingOn(setting) && this.usage?.bonuses ) Object.assign(this.usage.bonuses, PRISTINE_BONUSES);
+    return orig.apply(this, args);
+  }
+});
+
+/**
+ * E1：**「稳定护佑」的酸性抗性算成 `NaN`。**
+ *
+ * `ember.crucible-effects > wardOfStabilizat` 的唯一一条 change 是
+ * `{key: "system.resistances.acid", type: "add", value: 5}` —— **少了 `.bonus`**。
+ *
+ * 而抗性的 schema（`:40972`）是
+ * `resistances: SchemaField({<damageType>: SchemaField({bonus, immune})})` ——
+ * `system.resistances.acid` **本身是一个 SchemaField**，不是数字。
+ * 往 SchemaField 上做 "add"，派生出来的整个抗性对象被打坏，总值变 `NaN`，
+ * 此后每一次酸性伤害结算都带着 NaN 传播（伤害数字变 NaN、聊天卡伤害栏是空的）。
+ *
+ * 同 pack 的对照：`luminousCrystal0` 三条、`bewilderment0001` 一条，
+ * 全部规规矩矩写 `system.resistances.<type>.bonus`。
+ * 实测该 pack 26 篇文档里 14 篇带 changes，**落在 `system.resistances.<type>` 这一层的只有它一条**。
+ *
+ * 修法：在效果的数据准备阶段把 key 补成 `.bonus`。
+ * 归属判据严格：只认 `^system\.resistances\.<已知伤害类型>$`，不认识的一律不碰；
+ * ember 哪天把 key 补对了，正则就不再匹配，补丁自动空转。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleActiveEffect#prepareBaseData（E1 抗性 change 少了 .bonus）",
+  setting: "patchResistanceChangeKey",
+  resolve: () => CONFIG.ActiveEffect?.documentClass,
+  method: "prepareBaseData",
+  wrap: (orig, setting) => function prepareBaseData(...args) {
+    const r = orig.apply(this, args);
+    if ( !settingOn(setting) ) return r;
+    const changes = this.system?.changes ?? this.changes;
+    if ( !Array.isArray(changes) ) return r;
+    const types = globalThis.SYSTEM?.DAMAGE_TYPES;
+    for ( const c of changes ) {
+      const m = /^system\.resistances\.([a-zA-Z]+)$/.exec(c?.key ?? "");
+      if ( !m ) continue;                                  // 已经带 .bonus / 或压根不是抗性 → 不动
+      if ( types && !(m[1] in types) ) continue;           // 不认识的伤害类型 → 不猜
+      c.key = `${c.key}.bonus`;
+    }
+    return r;
+  }
+});
+
 /* -------------------------------------------- */
 /*  D 系列：描述与数据的伤害类型不一致               */
 /* -------------------------------------------- */
@@ -1529,6 +1608,10 @@ Hooks.once("init", () => {
     "<strong>这是信息泄漏</strong>：角色卡把「私密传记」无条件渲染给所有能打开卡的人，权限设成 limited/observer 的玩家照样能原文读到 GM 私记。提示语写着「仅拥有者可见」，实现却没兑现。开启后非拥有者看不到该字段。");
   bool("patchSkillDialogSwap", "B4 回搬：掷骰对话框里换了技能却没生效（上游 798a8638）",
     "多技能团队检定时，玩家在对话框里换成另一项技能，系统掷的仍然是默认那一项——对话框的返回值被丢掉了。上游已在开发版修好（尚未发布），本项把它回搬。单技能检定不受影响。");
+  bool("patchRepeatedPrepare", "I4 修正位移动作重复准备导致的加成叠加（上游 issue #1404）",
+    "位移类动作在规划路径后会第二次准备，而系统只重置了消耗、没重置加成——带「强化」标签的动作（如飞踢）伤害会<strong>比条目描述多 6 点</strong>；路径被判非法需要重新规划时会变成多 18 点。开启后每次准备前把加成恢复成原始态。");
+  bool("patchResistanceChangeKey", "E1 修正「稳定护佑」把酸性抗性算成 NaN",
+    "该效果的加值写在了抗性对象本身而不是它的 bonus 字段上，导致派生出来的酸性抗性变成 NaN，此后每次酸性伤害结算都带着 NaN 传播。开启后自动补上正确的字段路径。");
   bool("patchEnchantmentBonus", "B1/B2 回搬：词缀推导的附魔加值不生效（上游 bea623d8）",
     "附魔加值在数据准备的<strong>太早</strong>阶段就被算死，而词缀要到派生阶段才解析完——给武器加词缀后攻击掷骰里没有附魔加值、给护甲加词缀后闪避防御不涨，手动把附魔等级改成同一档反而就好了。上游已在开发版修好（尚未发布），本项把它回搬。");
   bool("patchCurrencyPopout", "B3 回搬：角色卡弹成独立窗口后货币归零（上游 1659465a）",
