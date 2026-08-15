@@ -52,12 +52,12 @@
 ```
 C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── module.json
-├── scripts\tempfix.mjs        ← 全部逻辑（约 990 行，注释密；顶部有四条共用前提）
+├── scripts\tempfix.mjs        ← 全部逻辑（约 1900 行，注释密；顶部有四条共用前提）
 ├── README.md                  ← 面向使用者：每个补丁的根因与做法
 ├── HANDOFF.md                 ← 本文件
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 撤回记录、§6 已排除清单
 ├── tests\tempfix_harness.mjs  ← 离线冒烟测试（不需要 Foundry）
-└── probes\                    ← 取证脚本（node 五个 + 浏览器控制台一个）
+└── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
 ```
 
 Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
@@ -73,8 +73,8 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**192 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**192 passed / 0 failed**。
+**198 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**198 passed / 0 failed**。
 
 桩件本身也验过 —— 变异测试把 52 处补丁逐个改回坏写法，**52/52 全部被抓住**。
 （脚本没有入库，重跑的话照 §5 的写法现写一个即可：备份 → 字符串替换 → 跑 harness → finally 还原。）
@@ -86,27 +86,75 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 开 Crucible 世界 → 启用模块 → 选中角色 token → 控制台 `emberCrucibleTempFix.diagnose()`。
 
-逐项要确认的：
+逐项要确认的。**每行都标了设置键名**，好让「30 个开关是不是都测过了」可以机械核对
+（表的行数 > 开关数，因为有些开关管多个动作、必须分开验 —— 这正是以前漏测的地方）。
 
-| # | 怎么看 | 期望 |
-|---|---|---|
-| P1 | **空手**打一次基础打击，再点副手打击 | 能用。`diagnose()` 里 `weapons.mainhand.sourceSlot` 应为 1（补之前是 0），`id` 为 null |
-| P1′ | 让上一个动作**不是**打击，再点副手打击 | 仍然应该被拦住 |
-| P2 | 贴着敌人用撕咬 | 能命中；`suddenBite` 应为 `{minimum: null, maximum: 1}` |
-| P3 | 泽夫角色的动作列表 | 出现「聚能 Energize」，且**名字是中文**（说明是从合集读的、babele 生效了） |
-| P3′ | 已经自己学了 `Rune: Storm` 的角色 | **不应该**出现两个 energize |
-| N9 | 召唤一只火精怪 | 有「点燃 Enkindle」；`diagnose()` 里 `training.flame === 1` |
-| P4 | 被一个**打士气**的法术抵抗后用疗愈导流 | 恢复的是士气不是生命值；`tags` 里**没有** generic、**仍有** harmless；`hasDice` 为 false |
-| N1 | 暴击后用「湮灭之印」 | 正常出卡、扣资源；`diagnose().patches.hookOverrides` 显示已覆盖 |
-| **N10** | 用任一血统的招牌变身（如 Altyra 雷法姆变身） | **角色身上真的出现效果图标**、且过 N 轮后消失；`diagnose().patches.universal` 含 turnsDuration |
-| N2 | 用「强化护盾」 | 先确认图标出现了（N10 生效），再看护甲防御 +3 真的涨了 |
-| N3 | 被「排斥踢」命中 | 踉跄 1 轮后消失，不是 ∞ |
-| N4 | 对倒下的队友用「余烬之火」 | 能选中、使用按钮可点 |
-| N5 | 用「迷乱凝视」 | 打的是意志；`diagnose().bewilderingGaze.defenseType === "willpower"` |
-| N6 | 用「反重力石」 | 不需要选别人；`diagnose().antigravityStone.type === "self"` |
-| **N11** | 给角色装一件带符文 Spellcraft 词缀的物品 | `diagnose().training` 里该符文为 1；控制台不再刷 prepareGrimoire 的错误 |
-| N7 | 佩戴并投注暗焰头冠后用「暗焰射线」 | 正常出卡（控制台可能仍有一条 initialize 的 console.error，那是补不掉的化妆问题） |
-| — | 控制台 | 无未捕获异常；关掉任一开关后 `diagnose().patches.active` 里对应项消失 |
+> **中文名以你装的汉化模块为准**，可能与本表不同。找不到就在控制台按 id 查：`_token.actor.actions.<id>`。
+>
+> **`diagnose()` 里有两条独立的轴**：「已包装」= 上游 guard 通过、补丁装上了；
+> 「开/关」= 当前是否生效。**包装体永不卸载**，所以关掉开关后仍显示「已包装」，这是正常的。
+
+**A 组 —— 选中角色 token 跑 `emberCrucibleTempFix.diagnose()` 就能看**
+
+| 设置键 | # | 怎么看 | 期望 |
+|---|---|---|---|
+| `patchOffhandStrike` | P1 | **空手**打一次基础打击 →**点确认那张聊天卡**→ 再点副手打击 | 能用。`weapons.mainhand.sourceSlot` 为 1（补之前是 0）、`id` 为 null |
+| `patchOffhandStrike` | P1′ | 让上一个动作**不是**打击，再点副手打击 | 仍然被拦住 |
+| `patchSuddenBite` | P2 | 贴着敌人用撕咬（`suddenBite`） | 能命中；`suddenBite` 为 `{minimum: null, maximum: 1}` |
+| `patchRuneCantrips` | P3 | 泽夫角色的动作列表 | `diagnose().cantrips` 里出现 `energize` |
+| `patchRuneCantrips` | P3′ | 已经自己学了 `Rune: Storm` 的角色 | **不应该**出现两个 energize |
+| `patchRuneCantrips` | N9 | 召唤一只火精怪 | 有 `enkindle`；`training.flame === 1` |
+| `patchAffixTraining` | N11 | 装一件带符文 Spellcraft 词缀的物品 | `training` 里该符文为 1；控制台不再刷 prepareGrimoire 错误 |
+| `patchBewilderingGaze` | N5 | 用迷乱凝视（`bewilderingGaze`） | `bewilderingGaze.defenseType === "willpower"` |
+| `patchAntigravityStone` | N6 | 用反重力石（`antigravityStone`） | 不需要选别人；`antigravityStone.type === "self"` |
+| `patchSparkScope` | N4 | 对倒下的队友用余烬之火（`heartSparkOfEmber`） | 能选中、使用按钮可点 |
+
+**B 组 —— 要真的放一次动作**
+
+| 设置键 | # | 怎么看 | 期望 |
+|---|---|---|---|
+| `patchTurnsDuration` | **N10** | 用任一血统的招牌变身（如 `tyraphicTransformation`） | **身上真的出现效果图标**且 N 轮后消失；`patches.universal` 含 turnsDuration |
+| `patchEffectChanges` | N2 | 用强化护盾（`sentinelShielding`）—— **先确认 N10 那格过了** | 图标出现后，护甲防御 +3 真的涨了 |
+| `patchAbyssMark` | N1 | 暴击后用湮灭之印（`abyssMarkUnmaking`） | 正常出卡、扣资源；`patches.hookOverrides` 显示已覆盖 |
+| `patchStaggerDuration` | N3 | 被排斥踢（`sentinelKick`）命中 | 踉跄 1 轮后消失，不是 ∞ |
+| `patchDarkflameCirclet` | N7 | 佩戴并投注暗焰头冠后用暗焰射线 | 正常出卡（控制台仍可能有一条 initialize 的 error，那是补不掉的化妆问题） |
+| `patchRestorativeRedirection` | P4 | 被**打士气**的法术抵抗后用疗愈导流 | 恢复的是士气；`tags` 里**没有** generic、**仍有** harmless；`hasDice` 为 false |
+| `patchSwallowEffectId` | C1 | 让一只 Mootap 用吞下（`swallow`） | 正常出卡、目标身上出现效果；再用反刍（`regurgitate`）能放出来 |
+| `patchTumbleScope` | C4 | **选中敌人**点翻滚穿越（`tumble`） | 不再报阵营不合法 |
+| `patchDawnBeaconScope` | C5 | 用黎明信标（`dawnBeacon`） | 聊天卡上目标数 > 0、有骰子 |
+| `patchMissingRollProvider` | X1 | 触发脓疱迸裂（`repugnantPustules`） | 聊天卡上有伤害骰。**数值来自系统默认，非上游权威值** |
+| `patchMissingRollProvider` | X1′ | 触发深渊残渣（`abyssalRemains`） | 同上 |
+| `patchDamageTypes` | D-1 | 用毒液喷吐（`noxiousSpray`） | 伤害类型是毒，不是电击 |
+| `patchDamageTypes` | D-2 | 用自毁（`selfDestruct`） | 算火焰，不是穿刺 |
+| `patchDamageTypes` | D-3 | 用吞噬思绪（`devourThoughts`） | 灵能伤害，不落回天生武器的钝击 |
+| `patchWildStrike` | I1 | 让**没有天生武器**的角色点野性打击（`wildStrike`） | 被拦住，不再白刷行动点 |
+| `patchEffectIdAlignment` | E2-1 | 标记猎物（`implacableHunter`）后攻击它 —— **依赖 N10** | 出现 +2 祝福 |
+| `patchEffectIdAlignment` | E2-2 | 触发顽强体力（`formidableStamina`）—— **依赖 N10** | 行动点真的退还 |
+| `patchResistanceChangeKey` | E1 | 上稳定护佑，看角色卡抗性 | 酸性抗性是数字，不是 `NaN` |
+| `patchRepeatedPrepare` | I4 | 带**强化**标签的位移动作（如飞踢），规划路径后再规划一次 | 伤害不比条目描述多 6 点 |
+| `patchSkillDialogSwap` | B4 | 多技能团队检定，在对话框里换成另一项技能 | 掷的是换后的那一项 |
+| `patchHasKnowledge` | I2 | GM 手工加一条知识，再用评估强度 | 拿到 +2 祝福 |
+| `patchEnchantmentBonus` | B1/B2 | 给武器加词缀看攻击骰；给护甲加词缀看闪避 | 攻击骰里出现附魔加值；闪避防御涨 |
+| `patchCurrencyPopout` | B3 | 角色卡弹成独立窗口 | 货币不为 0 |
+| `patchFlankingToggle` | I6 | 开夹击叠层 → 换选别的 token → 关叠层 | 旧图形也消失，不用刷新 |
+| `patchFeaturedEquipment` | B5 | 打开多爪多牙怪物的卡，看侧栏精选装备 | 列出 3 件天生武器 |
+
+**C 组 —— 需要第二个玩家端登录（不是 30 秒能做完的，单独排时间）**
+
+| 设置键 | # | 怎么看 | 期望 |
+|---|---|---|---|
+| `patchPrivateBiography` | I3 | 用 limited/observer 权限的**玩家账号**打开 NPC 卡，切到传记页 | 看不到私密传记原文 |
+| `patchDefenseTypeLabel` | I5 | **玩家端**看一张攻击聊天卡的目标栏 | 有防御类型（如「反射」），**仍然不显示 DC 数字** |
+
+**D 组 —— 通用**
+
+| 怎么看 | 期望 |
+|---|---|
+| 启动时的控制台 | 有若干行「已包装 X」；**无未捕获异常** |
+| 关掉一个**动作类**补丁（P/N/C/X/D/I1/E2 那批） | `diagnose().patches.active` 里对应 action id 消失 |
+| 关掉 N10 / N1 | 看 `patches.universal` / `patches.hookOverrides` |
+| 关掉**原型类**补丁（B1–B4、I2–I5、E1、I4） | 看 `patches.prototypes` —— 每行是「标签 = 已包装/未包装 **/** 开/关」，**开关只改后半段** |
+| 关掉 C1 / N11 / I6 | 看 `patches.others`（`swallowEffectId` 长度、`affixTrainingFixed` 条数、`flankingToggleWrapped`） |
 
 ---
 
@@ -151,7 +199,8 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 6. 下一步（按顺序）
 
-1. **开世界跑第 3 节那张表。** 30 条补丁一条真实验证都没有，这是唯一该先做的事。
+1. **开世界跑第 3 节那张表。** 30 个开关一条真实验证都没有，这是唯一该先做的事。
+   表里每行都标了设置键名 —— 跑完对一遍键名，就知道 30 个开关是不是都覆盖到了。
 2. 按实测结果订正本文件第 4 节。
 3. 提两份 issue（清单已写好，见 `docs/上游缺陷诊断.md` 末尾）：
    一份给 `foundryvtt/crucible`（3 条），一份给 Mage Hand Press（8 条）。

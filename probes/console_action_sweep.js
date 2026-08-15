@@ -96,6 +96,7 @@
 /*  主函数                                                                      */
 /* ============================================================================ */
 globalThis.crucibleSweep = async function crucibleSweep({
+  iUnderstandTheBlocker = false, // ⛔ 未修复的 BLOCKER 闸门，见文件末尾的说明。不传 true 直接拒跑
   includePacks     = true,   // 扫合集（慢，但覆盖面大得多）
   includeAdventures= true,   // 冒险包：265 个 actor 全嵌在 1 个顶层文档里，不特判必然漏
   hostFallback     = true,   // 无宿主的合集条目：用一个挑定的 actor 现造实例来准备（见 §P 保真度警告）
@@ -106,6 +107,16 @@ globalThis.crucibleSweep = async function crucibleSweep({
   checkIdempotent  = false,  // 对每条动作跑两遍 prepare 并比对（I4 那一类），很慢
   maxUnits         = Infinity
 } = {}) {
+
+  // ⛔ BLOCKER 闸门。runS2（:486）跳过 _canUse()，而 delay/fieldStudy/imbueAffix/amplifyAffix
+  //    的 preActivate 会弹模态对话框；期间写盘熔断一直遮着 DatabaseBackend，
+  //    等于把世界锁成只读直到对话框点完。详见文件末尾。
+  if ( !iUnderstandTheBlocker ) {
+    const msg = "crucibleSweep 已被闸门拦下：存在未修复的 BLOCKER（模态对话框 + 写盘熔断会把世界锁成只读）。"
+      + "确认要跑请传 { iUnderstandTheBlocker: true }，并先备份世界、确保无人在线。";
+    console.error("%c" + msg, "color:#c33;font-weight:bold");
+    return { blocked: true, reason: msg };
+  }
 
   const R = {
     _t: new Date().toISOString(),
@@ -1260,7 +1271,11 @@ globalThis.crucibleSweep = async function crucibleSweep({
 /* ============================================================================ */
 const banner = (t) => console.log(`%c${t}`, "font-size:13px;font-weight:bold");
 
-const run = globalThis.crucibleSweep().then(R => {
+// ⛔ 不再自动运行 —— 见文件末尾的 BLOCKER 说明。
+// 这个包装只负责在你手动调用时把报告打出来；粘贴脚本本身不会触发任何扫描。
+const run = Promise.resolve({ blocked: true, reason: "未自动运行；见文件末尾说明" });
+globalThis.crucibleSweepReport = async opts => globalThis.crucibleSweep(opts).then(R => {
+  if ( R?.blocked ) return R;
   banner("crucible 全动作干跑遍历器");
   console.log(R);
 
@@ -1333,7 +1348,48 @@ const run = globalThis.crucibleSweep().then(R => {
   return R;
 });
 
-console.log("%c已定义 crucibleSweep()，正在跑默认一轮…（返回值是 Promise，可 await）", "color:#888");
+/* ============================================================================
+ * ⛔ 默认不自动跑 —— 有一条已知 BLOCKER 尚未修复
+ * ----------------------------------------------------------------------------
+ * `runS2`（本文件 :485，钩子调用在 :496）直接 `await p._callActionHooksAsync("preActivate")`，
+ * **跳过了上游 `#use()` 里的 `_canUse()` 闸门**（crucible-compiled.mjs:19319-19323）。
+ * 而 crucible 有四个 preActivate 钩子会 `await DialogV2.prompt(…)`：
+ *   amplifyAffix(:8755) / delay(:9231) / fieldStudy(:9479) / imbueAffix(:9724)
+ *
+ * `delay` 是 `DEFAULT_ACTIONS`（:4807）的成员，`#prepareDefaultActions`（:42002）
+ * 给**每一个** actor 无条件造一份 —— 合集里约 300 条，加上世界里每个 actor 各一条。
+ *
+ *  · 在战斗中跑：每个 actor 弹一次输入框，脚本 await 在那里不动，看起来像挂了。
+ *  · 不在战斗中跑：`game.combat.combatant` 为 null，:9229 抛 TypeError，
+ *    约 300 条同样的错误灌进 R.errors，把真错误淹掉。
+ *  · **最糟的**：写盘熔断在 :302 装、:1254 的 finally 才拆。脚本卡在对话框上时，
+ *    `CONFIG.DatabaseBackend` 的四个方法与 `game.settings.set` 一直被遮着 ——
+ *    **你的世界在把几百个对话框点完或 F5 之前写不进任何东西**。
+ *
+ * 修好它需要两道闸（缺一不可）：
+ *  ① `runS2` 开头加 id 跳过表（delay / fieldStudy / imbueAffix / amplifyAffix）。
+ *     **不能 `return null`** —— callsite :1012-1014 会把 null 记成「S2 跑通了」，
+ *     然后拿没跑过 preActivate 的形态去做 A-ID1/A-K1 判定 = 假绿。要走 :1027 的「未覆盖」分支。
+ *  ② 遮 `DialogV2.wait`（prompt/confirm/input 内部都转调它）。注意这四个是**类自身的
+ *     own static 属性**（foundry.mjs:37692 起），还原必须用 `getOwnPropertyDescriptor`
+ *     + `defineProperty`，用 `delete` 会把真实实现永久删掉。
+ *
+ * 另：:302-303 的 `installWriteFuse()` / `suspendTempfix()` 在 `try`（:305）**之外**，
+ * 中途抛错就没人拆熔断 —— 应初始化成空函数再进 try。
+ *
+ * 在这两道闸修好之前，**不要在有人在玩的世界里跑**。
+ * 确实要跑（建议先备份世界、且没有其他人在线）：
+ *
+ *     await crucibleSweep({ iUnderstandTheBlocker: true })
+ * ========================================================================== */
+console.log("%c⛔ 遍历器已定义但未自动运行 —— 有一条未修复的 BLOCKER（见文件顶部 §0 上方的说明）。",
+  "color:#c33;font-weight:bold");
+console.log("%c   它会对约 300 个动作调 preActivate，其中 delay/fieldStudy/imbueAffix/amplifyAffix 会弹模态对话框，",
+  "color:#c33");
+console.log("%c   而写盘熔断在此期间一直遮着 DatabaseBackend —— 你的世界会写不进任何东西，直到对话框点完或 F5。",
+  "color:#c33");
+console.log("%c   确实要跑：await crucibleSweep({ iUnderstandTheBlocker: true })（建议先备份、且无人在线）",
+  "color:#888");
 return run;
 
 })();
