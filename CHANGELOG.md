@@ -2,6 +2,43 @@
 
 本文件记录对玩家可见的行为变化。行号级的取证过程在 `docs/上游缺陷诊断.md`。
 
+## 0.4.3
+
+补丁数不变（27 条），本版全是**闸门口径**的收口 —— 来自与上游对账里 14 条有行动项的条目。
+其中大部分（D 系列、N11、C1、N10 的源码闸门、P1 的 `__guard`、B1–B4）在前几版已经做掉，
+这一版补上剩下的三条。
+
+### 新增：Ember 版本轴
+
+版本上限此前只比 `game.system.version`（crucible）。但**ember 侧的数据缺陷该按 Ember 版本封顶** ——
+上游修 Ember 的数据不等于 crucible 发版。
+
+依据是上游自己的做法：crucible 内建的 `EMBER_PATCHES`（`:45771`）由 `applyEmberPatches()`（`:45782`）
+按 `if (isNewerVersion(ember.version, emberVersion)) continue;` 闸门。
+现在 `fixedInEmber` 与它同源。两条轴的失败方向都是**保守生效**。
+
+### 新增：N11 的退休闸门
+
+上游一旦给 `CrucibleActor` 补上 `training` getter（issue #1423 的正解），
+ember 那句 `this.training[runeId]` 自己就能跑通 —— 本条即自动停用，不再去改那 12 个词缀钩子。
+
+### 顺带核实：crucible 自带的 Ember 兼容层不会与本模块冲突
+
+`EMBER_PATCHES` 只登记了 `"0.5.1"`，而闸门是「ember 比它新就跳过」——
+**装 Ember 0.6.0 时那一整层是关掉的**，不会与本模块争同一批钩子。已写进 README 兼容性说明。
+
+### 复核后维持原判的两条
+
+- **N9 的闸门不改用 `TALENT_ID_MIGRATIONS`。** 对账建议用那张表判定「陈旧快照」，
+  但它只覆盖 4 个废弃小写 id，而现有判据 `if (item.system.training?.type) continue;`
+  直接看症状本身，还能盖住 ember 那四个 id 正确但 training 为空的血统。**收窄了不划算。**
+- **N3 的 `expiry` 维持 `turnStart`。** 对账里有一条单路证据主张改 `turnEnd`，
+  与 crucible 自家 `SYSTEM.EFFECTS.staggered` 生成器的产物冲突 —— 以生成器为准。
+
+### 测试
+
+179 → **184 条断言**；变异测试 46 → **48 处，48/48 全部被抓住**。
+
 ## 0.4.2
 
 ### E2：两个血裔的招牌能力从来没触发过

@@ -1420,6 +1420,14 @@ function installAffixTrainingFix() {
   try { on = game.settings.get(MODULE_ID, "patchAffixTraining"); } catch { /* 尚未注册 */ }
   if ( !on ) return false;
 
+  // 上游一旦给 CrucibleActor 补上 training getter（issue #1423 的正解），
+  // ember 那句 `this.training[runeId]` 自己就能跑通，本条即退休。
+  const actorProto = CONFIG.Actor?.documentClass?.prototype;
+  if ( actorProto && ("training" in actorProto) ) {
+    log("上游已补上 CrucibleActor#training，N11 自动停用");
+    return false;
+  }
+
   const affix = globalThis.crucible?.api?.hooks?.affix;
   if ( !affix ) { warn("crucible.api.hooks.affix 不可用，N11 未安装"); return false; }
 
@@ -1549,15 +1557,17 @@ const UNIVERSAL_DEFS = [
  * @param {string} [fixedIn]  上游修好它的系统版本；空表示尚未修好
  * @returns {boolean}         这条补丁是否已被上游取代
  */
-function supersededByUpstream(fixedIn) {
-  if ( !fixedIn ) return false;
-  const current = globalThis.game?.system?.version;
-  if ( !current ) return false;
+function supersededByUpstream(fixedIn, fixedInEmber) {
   const iu = globalThis.foundry?.utils?.isNewerVersion;
   if ( typeof iu !== "function" ) return false;
   // isNewerVersion(v1, v0) = v1 是否比 v0 新。相等时返回 false，
-  // 所以这里要「当前版本 >= fixedIn」需写成 !(fixedIn 比 current 新)。
-  return !iu(fixedIn, current);
+  // 所以「当前版本 >= fixedIn」要写成 !(fixedIn 比 current 新)。
+  const reached = (fixed, current) => !!fixed && !!current && !iu(fixed, current);
+  // 两条轴：crucible 侧的缺陷按系统版本封顶，**ember 侧的数据缺陷按 Ember 版本封顶**。
+  // 依据是上游自己的做法 —— `applyEmberPatches()`（`:45782`）就是
+  // `if (isNewerVersion(ember.version, emberVersion)) continue;`，按 Ember 版本闸门。
+  return reached(fixedIn, globalThis.game?.system?.version)
+    || reached(fixedInEmber, globalThis.ember?.version);
 }
 
 /** 已经因版本上限停用过、并且已经说明过一次的补丁（避免每次改设置都刷屏） */
@@ -1567,9 +1577,9 @@ function applyToggles() {
   const on = key => {
     try { return game.settings.get(MODULE_ID, key); } catch { return true; }   // 尚未注册时按开处理
   };
-  const active = ({ setting, fixedIn }) => {
+  const active = ({ setting, fixedIn, fixedInEmber }) => {
     if ( !on(setting) ) return false;
-    if ( !supersededByUpstream(fixedIn) ) return true;
+    if ( !supersededByUpstream(fixedIn, fixedInEmber) ) return true;
     if ( !announcedSuperseded.has(setting) ) {
       announcedSuperseded.add(setting);
       log(`${setting}：上游 ${fixedIn} 已修好，本补丁自动停用`);

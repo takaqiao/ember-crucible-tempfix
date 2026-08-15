@@ -73,10 +73,10 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**179 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**179 passed / 0 failed**。
+**184 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**184 passed / 0 failed**。
 
-桩件本身也验过 —— 变异测试把 46 处补丁逐个改回坏写法，**46/46 全部被抓住**。
+桩件本身也验过 —— 变异测试把 48 处补丁逐个改回坏写法，**48/48 全部被抓住**。
 （脚本没有入库，重跑的话照 §5 的写法现写一个即可：备份 → 字符串替换 → 跑 harness → finally 还原。）
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。

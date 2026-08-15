@@ -1208,7 +1208,28 @@ console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍
   check("读不到比较 API → 同样保守地继续生效", !!ACT().suddenBite);
   foundry.utils.isNewerVersion = realCmp;
 
+  // Ember 版本轴：ember 侧的数据缺陷该按 **Ember 版本** 封顶，不是 crucible 版本。
+  // 依据是上游自己的 applyEmberPatches()（:45782）就是按 ember.version 闸门的。
   delete p2.fixedIn;
+  globalThis.ember = { version: "0.6.0" };
+  p2.fixedInEmber = "0.7.0";
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("Ember 版本低于 fixedInEmber → 仍然生效", !!ACT().suddenBite);
+  p2.fixedInEmber = "0.6.0";
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("Ember 版本追上 fixedInEmber → 自动停用", ACT().suddenBite === undefined);
+  delete globalThis.ember;
+  setSetting("ember-crucible-tempfix.patchSuddenBite", true);
+  check("读不到 Ember 版本 → 保守地继续生效", !!ACT().suddenBite);
+  delete p2.fixedInEmber;
+
+  // N11 的退休闸门：上游补上 CrucibleActor#training 之后就不该再改词缀钩子
+  Object.defineProperty(CrucibleActor.prototype, "training", { get() { return this.system.training; }, configurable: true });
+  check("上游补上 training getter → N11 自动停用",
+    globalThis.emberCrucibleTempFix.installAffixTrainingFix() === false);
+  delete CrucibleActor.prototype.training;
+  check("撤掉 getter → N11 恢复安装", globalThis.emberCrucibleTempFix.installAffixTrainingFix() === true);
+
   setSetting("ember-crucible-tempfix.patchSuddenBite", true);
 }
 
