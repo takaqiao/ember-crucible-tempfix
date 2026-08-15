@@ -256,6 +256,7 @@ const makeWeapon = ({ id = null, slot = SLOTS.EITHER, name = "拳头" } = {}) =>
 class CrucibleActor {
   constructor(name, items = [], weapons = {}) {
     this.name = name;
+    this.type = "hero";
     this.uuid = `Actor.${name}`;
     this.level = 4;
     this.flags = { ember: {} };
@@ -271,6 +272,22 @@ class CrucibleActor {
     UUID_REGISTRY.set(this.uuid, this);
   }
   get items() { return this.itemList; }
+  /** :36914 —— 只读背景那一份，这就是 #1412 的 bug 本体 */
+  hasKnowledge(knowledgeId) {
+    if (this.type !== "hero") return false;
+    return this.system.details.background.knowledge.has(knowledgeId);
+  }
+  /** :36937 —— const check 那一句就是 bug 本体，也是闸门认的特征串 */
+  async rollSkill(skillId, {banes = 0, boons = 0, dc, messageMode, dialog, chatMessage = false} = {}) {
+    if (dialog === true) dialog = {};
+    const skills = dialog?.skills;
+    if (skills) { skillId ??= Object.keys(skills)[0]; dc ??= skills[skillId].dc; }
+    const check = this.getSkillCheck(skillId, {banes, boons, dc, passive: false});
+    if (dialog) { const response = await check.dialog({}); if (response === null) return null; }
+    await check.evaluate({});
+    return check;
+  }
+  getSkillCheck(skillId) { return { data: {type: skillId, messageMode: null}, async dialog() { return this.__swapTo ?? this; }, async evaluate() { this.evaluated = true; }, async toMessage() {} }; }
   callActorHooks() {}
   getAbilityBonus(list, opts) { return opts?.type === "best" ? 7 : 3; }
   /** 真实系统在 prepareBaseData 的 #clear()（:41158）里把 actions **原地清空**再重填 */
@@ -317,6 +334,23 @@ class CrucibleArmorModel extends CruciblePhysicalStub {
     this.dodge = { base: 10 + enchantment.bonus };   // category.dodge.base(this.armor.base) + enchantment.bonus
   }
   prepareDerivedData() { this.__derived = true; }
+}
+
+/**
+ * 角色卡基类桩件：复刻 `#prepareBiography()`（:14663）**无条件**把 private 三件套
+ * 塞进上下文这一点 —— 那句 `secrets: this.document.isOwner` 只管富文本里的 secret 块，
+ * 管不到 private 字段本身，所以 limited/observer 的人照样读得到原文（issue #1406）。
+ */
+class CrucibleBaseActorSheetStub {
+  constructor(document) { this.document = document; }
+  async _prepareContext() {
+    return {
+      biography: {
+        publicField: {}, publicSrc: "公开", publicHTML: "<p>公开</p>", publicClass: "public-biography",
+        privateField: {}, privateSrc: "GM 私记", privateHTML: "<p>GM 私记</p>", privateClass: "private-biography"
+      }
+    };
+  }
 }
 
 /** 自定义元素桩件：复刻 `_buildElements` 里那句致命的 removeAttribute（:7527） */
@@ -378,7 +412,10 @@ HOOKS_AFFIX.arrowSpellcraft = {
 globalThis.crucible = {
   api: {
     models: { CrucibleAction },
-    applications: { elements: { HTMLCrucibleCurrencyElement: CurrencyElement } },
+    applications: {
+      elements: { HTMLCrucibleCurrencyElement: CurrencyElement },
+      CrucibleBaseActorSheet: CrucibleBaseActorSheetStub
+    },
     // 外层 freeze、子表可写 —— ember 正是靠这一点注册进来的（:14044 / ember.mjs:126744）
     hooks: Object.freeze({
       action: HOOKS_ACTION,
@@ -880,6 +917,84 @@ console.log("\nC 系列：crucible 自身的缺陷");
   check("C1 未知非法值会报警一次", warnCount > warnsBefore2);
   sw._SWALLOWED_EFFECT_ID = "swallowed00000000";
   setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
+}
+
+console.log("\nI 系列：上游还没修的开放 issue");
+{
+  const actor = new CrucibleActor("I");
+
+  // I1 #1403：strikes 为空数组时 every() 真空通过 → 动作可用但什么都不做，还退还行动点
+  const empty = new CrucibleAction({ id: "wildStrike", tags: ["natural"] }, { actor });
+  empty.usage.strikes = [];
+  check("I1 没有天生武器 → 拦住", throws(() => empty.canUse()) !== null);
+
+  const armed = new CrucibleAction({ id: "wildStrike", tags: ["natural"] }, { actor });
+  armed.usage.strikes = [{ name: "利爪" }];
+  check("I1 有天生武器 → 放行", throws(() => armed.canUse()) === null);
+
+  const notNatural = new CrucibleAction({ id: "wildStrike", tags: ["melee"] }, { actor });
+  notNatural.usage.strikes = [];
+  check("I1 归属判据：没有 natural 标签就不插手", throws(() => notNatural.canUse()) === null);
+
+  // I2 #1412：hasKnowledge 只读 background 那一份
+  const hero = new CrucibleActor("I2hero");
+  hero.type = "hero";
+  hero.system.details = {
+    background: { knowledge: new Set(["beasts"]) },       // 背景给的
+    knowledge: new Set(["beasts", "undead"])              // 聚合值（含 GM 手工加的 undead）
+  };
+  check("I2 背景给的知识仍然认", hero.hasKnowledge("beasts") === true);
+  check("I2 手工添加的知识现在也认了", hero.hasKnowledge("undead") === true);
+  check("I2 没有的知识仍然是 false", hero.hasKnowledge("dragons") === false);
+
+  const npc = new CrucibleActor("I2npc");
+  npc.type = "adversary";
+  npc.system.details = { knowledge: new Set(["beasts"]) };
+  check("I2 非 hero 仍然返回 false（与上游一致）", npc.hasKnowledge("beasts") === false);
+
+  const noAgg = new CrucibleActor("I2old");
+  noAgg.type = "hero";
+  noAgg.system.details = { background: { knowledge: new Set(["fey"]) } };   // 没有聚合值
+  check("I2 读不到聚合值 → 退回上游行为", noAgg.hasKnowledge("fey") === true);
+
+  // I3 #1406：私密传记无条件渲染给所有能打开卡的人
+  const sheetCls = crucible.api.applications.CrucibleBaseActorSheet;
+  const asOwner = new sheetCls({ isOwner: true });
+  const asViewer = new sheetCls({ isOwner: false });
+  const [own, view] = await Promise.all([asOwner._prepareContext(), asViewer._prepareContext()]);
+  check("I3 拥有者仍然看得到私记", own.biography.privateHTML === "<p>GM 私记</p>");
+  check("I3 非拥有者看不到私记原文", view.biography.privateHTML === "" && view.biography.privateSrc === "");
+  check("I3 公开传记不受影响", view.biography.publicHTML === "<p>公开</p>");
+}
+
+console.log("\nB4：掷骰对话框里换了技能却没生效");
+{
+  const actor = new CrucibleActor("B4");
+  // 多技能团队检定：默认取第一项 acrobatics，玩家在对话框里换成 athletics
+  const swapped = { data: { type: "athletics", messageMode: null }, async evaluate() { this.evaluated = true; }, async toMessage() {} };
+  const orig = actor.getSkillCheck.bind(actor);
+  actor.getSkillCheck = id => {
+    const c = orig(id);
+    c.__swapTo = swapped;                    // 对话框返回的是**另一份** roll
+    return c;
+  };
+  const r = await actor.rollSkill(undefined, {
+    dialog: { skills: { acrobatics: { dc: 12 }, athletics: { dc: 12 } } }
+  });
+  check("B4 采纳了对话框返回的那一份", r === swapped, r?.data?.type);
+  check("B4 掷的是换过的技能", r.data.type === "athletics");
+  check("B4 确实掷了", r.evaluated === true);
+
+  // 反向：对话框取消 → 仍然返回 null
+  actor.getSkillCheck = id => { const c = orig(id); c.__swapTo = null; c.dialog = async () => null; return c; };
+  check("B4 取消对话框 → 返回 null", (await actor.rollSkill("acrobatics", { dialog: {} })) === null);
+
+  // 反向：关掉开关 → 回到上游原行为（丢掉对话框返回值）
+  setSetting("ember-crucible-tempfix.patchSkillDialogSwap", false);
+  actor.getSkillCheck = id => { const c = orig(id); c.__swapTo = swapped; return c; };
+  const r2 = await actor.rollSkill(undefined, { dialog: { skills: { acrobatics: { dc: 12 }, athletics: { dc: 12 } } } });
+  check("B4 关掉开关 → 回到上游原行为（仍掷默认技能）", r2.data.type === "acrobatics", r2?.data?.type);
+  setSetting("ember-crucible-tempfix.patchSkillDialogSwap", true);
 }
 
 console.log("\nB 系列：从上游开发版回搬");
