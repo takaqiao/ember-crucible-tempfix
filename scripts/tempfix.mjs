@@ -890,6 +890,148 @@ PROTOTYPE_PATCHES.push({
 });
 
 /* -------------------------------------------- */
+/*  I 系列：上游还没修的开放 issue                  */
+/* -------------------------------------------- */
+
+/**
+ * I1（上游 issue **#1403**）：**Wild Strike 在没有天生武器时仍然可用，而且能白刷行动点。**
+ *
+ * `natural` 标签的 canUse（`:4273`）是
+ * `if ( !this.usage.strikes.every(w => w.system.properties.has("natural")) ) throw ...`
+ * —— `strikes` 是**空数组**时 `every` 返回 **true**，判据真空通过。
+ *
+ * 于是没有天生武器的角色点 Wild Strike：动作显示可用、点得动、生成聊天卡，
+ * 但**一次骰都不掷、一点伤害都不出**，反而把行动点退还回来 —— 等于无本万利的行动点发生器。
+ *
+ * 上游 `crucible.api.hooks.action.wildStrike`（`:11051`）**只定义了 `acquireTargets`**，
+ * 所以补一个 `canUse` 是纯追加，顶不掉任何东西。
+ */
+ACTION_PATCHES.wildStrike = {
+  canUse() {
+    if ( !this.tags.has("natural") ) return;              // 归属判据
+    const strikes = this.usage?.strikes;
+    if ( !Array.isArray(strikes) || strikes.length ) return;   // 上游修好、或本来就有天生武器
+    throw new Error(game.i18n.localize("ACTION.WARNINGS.RequiresNatural"));
+  }
+};
+
+/**
+ * I2（上游 issue **#1412**）：**`hasKnowledge` 只认背景给的那一份知识。**
+ *
+ * `:36914` 整个函数体是
+ * `return this.system.details.background.knowledge.has(knowledgeId);` ——
+ * 读的是**背景条目自己那份快照**。而角色实际的知识聚合在 `system.details.knowledge`
+ * （schema `:43018`，与 `details.languages` 并列；角色卡的编辑入口 `#onEditDetailsProperty`
+ * `:15597` 写的也是 `system.details.<property>`，数据准备时会把背景那份并进来）。
+ *
+ * 后果不只是气泡：GM 手工给角色加的知识，在 Assess Strength / Intuit Weakness 里
+ * **本该拿到的 +2 祝福不会出现**，玩家只会觉得「这知识加了好像没用」。
+ *
+ * 修法是**整体替换**（原函数只有两行，逻辑简单到不构成照抄）：改读聚合值，
+ * 读不到再退回上游原来的那份，保证只增不减。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleActor#hasKnowledge（I2 只认背景知识）",
+  setting: "patchHasKnowledge",
+  resolve: () => CONFIG.Actor?.documentClass,
+  method: "hasKnowledge",
+  guard: { method: "hasKnowledge", includes: "details.background.knowledge" },
+  wrap: (orig, setting) => function hasKnowledge(knowledgeId) {
+    if ( !settingOn(setting) ) return orig.call(this, knowledgeId);
+    if ( this.type !== "hero" ) return false;              // 与上游一致
+    const all = this.system?.details?.knowledge;
+    if ( all?.has instanceof Function ) return all.has(knowledgeId);
+    return orig.call(this, knowledgeId);                   // 读不到聚合值 → 退回上游行为
+  }
+});
+
+/**
+ * I3（上游 issue **#1406**）：**「私密传记」对只有 limited/observer 权限的用户照样渲染。**
+ *
+ * `CrucibleBaseActorSheet#_prepareContext`（`:14599`）无条件 `biography: await this.#prepareBiography()`，
+ * 而 `#prepareBiography()`（`:14663`）把 `privateField` / `privateSrc` / `privateHTML`
+ * **无条件**塞进上下文 —— 没有任何权限判断（那句 `secrets: this.document.isOwner` 只管
+ * 富文本里的 secret 块，管不到 private 字段本身）。
+ *
+ * GM 把 NPC 权限设成 limited 好让玩家查基本信息，玩家切到「传记」页就能**原文读到 GM 私记**
+ * —— 身份反转、隐藏动机、剧透。tooltip 上写着「仅拥有者可见」，实现没兑现。
+ *
+ * 修法：包装 `_prepareContext`，非拥有者时把 private 三件套抹掉。
+ * 这是**只减不增**的改动，最坏情况是拥有者也看不到（那会立刻被发现），不会造成新的泄漏。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleBaseActorSheet#_prepareContext（I3 私密传记泄漏）",
+  setting: "patchPrivateBiography",
+  resolve: () => globalThis.crucible?.api?.applications?.CrucibleBaseActorSheet,
+  method: "_prepareContext",
+  wrap: (orig, setting) => async function _prepareContext(...args) {
+    const context = await orig.apply(this, args);
+    if ( !settingOn(setting) ) return context;
+    const bio = context?.biography;
+    if ( bio && !this.document?.isOwner ) {
+      bio.privateSrc = "";
+      bio.privateHTML = "";
+      bio.privateField = null;
+      bio.privateClass = "private-biography empty";
+    }
+    return context;
+  }
+});
+
+/**
+ * B4（上游 `798a8638`）：**掷骰对话框里换了技能，实际掷的还是默认那个。**
+ *
+ * `rollSkill`（`:36937`）把 `check` 声明成 `const`，对话框返回的 `response`
+ * 只用来判断「有没有取消」（`if (response === null) return null;`），**返回值本身被丢掉了**。
+ * 于是多技能团队检定里玩家在对话框里换成另一项技能，掷的仍然是默认那一项。
+ *
+ * 触发面只有一条路径：`GroupCheck` 走 `rollSkill(undefined, {dialog: {…, skills}})`，
+ * 而 `skillId ??= Object.keys(skills)[0]` 取的是第一项。单技能检定不受影响。
+ *
+ * 这一条**整体替换**（其余回搬全是包装）。理由是修改点在函数中段，包装够不着 `check` 这个局部量。
+ * 闸门认的是**有 bug 的那一句原文** `const check = this.getSkillCheck` ——
+ * 上游的修法正是把它改成 `let check`，所以上游一发布，闸门立刻失配、本条自动退休。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleActor#rollSkill（B4 对话框换技能被丢弃）",
+  setting: "patchSkillDialogSwap",
+  resolve: () => CONFIG.Actor?.documentClass,
+  method: "rollSkill",
+  guard: { method: "rollSkill", includes: "const check = this.getSkillCheck" },
+  wrap: (orig, setting) => async function rollSkill(skillId, options = {}) {
+    if ( !settingOn(setting) ) return orig.call(this, skillId, options);
+    let { banes = 0, boons = 0, dc, messageMode, dialog, chatMessage = false } = options;
+    if ( dialog === true ) dialog = {};
+
+    const skills = dialog?.skills;
+    if ( skills ) {
+      skillId ??= Object.keys(skills)[0];
+      dc ??= skills[skillId].dc;
+    }
+    let check = this.getSkillCheck(skillId, { banes, boons, dc, passive: false });
+    if ( messageMode ) check.data.messageMode = messageMode;
+    const label = id => globalThis.SYSTEM?.SKILLS?.[id]?.label ?? id;
+    let flavor = game.i18n.format("ACTION.SkillCheck", { skill: label(skillId) });
+
+    if ( dialog ) {
+      const { title, configurable = true } = dialog;
+      const dialogOptions = { flavor, messageMode, title, configurable };
+      if ( skills && (Object.keys(skills).length > 1) ) dialogOptions.skills = skills;
+      const response = await check.dialog(dialogOptions);
+      if ( response === null ) return null;
+      // ↓ 这三行就是上游 798a8638 补的：采纳对话框返回的那一份
+      check = response;
+      skillId = check.data.type;
+      flavor = game.i18n.format("ACTION.SkillCheck", { skill: label(skillId) });
+    }
+
+    await check.evaluate({ allowInteractive: check.data.messageMode !== "blind" });
+    if ( chatMessage ) await check.toMessage({ flavor, flags: { crucible: { skill: skillId } } });
+    return check;
+  }
+});
+
+/* -------------------------------------------- */
 /*  D 系列：描述与数据的伤害类型不一致               */
 /* -------------------------------------------- */
 
@@ -1254,7 +1396,8 @@ const PATCH_DEFS = [
   { setting: "patchTumbleScope", actionIds: ["tumble"] },
   { setting: "patchDawnBeaconScope", actionIds: ["dawnBeacon"] },
   { setting: "patchMissingRollProvider", actionIds: ["repugnantPustules", "abyssalRemains"] },
-  { setting: "patchDamageTypes", actionIds: ["noxiousSpray", "selfDestruct", "devourThoughts"] }
+  { setting: "patchDamageTypes", actionIds: ["noxiousSpray", "selfDestruct", "devourThoughts"] },
+  { setting: "patchWildStrike", actionIds: ["wildStrike"] }
 ];
 
 /** actionId → 补丁体的原始引用（applyToggles 会按开关把它们放回/摘掉） */
@@ -1378,6 +1521,14 @@ Hooks.once("init", () => {
     "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
   bool("patchAbyssMark", "N1 修正深渊「湮灭之印」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
+  bool("patchWildStrike", "I1 堵住「野性打击」的行动点漏洞（上游 issue #1403）",
+    "没有天生武器的角色也能用「野性打击」——判据用 every() 检查空数组，真空通过。动作显示可用、生成聊天卡，但一次骰都不掷、一点伤害都不出，<strong>反而把行动点退还回来</strong>，等于无本万利的行动点发生器。开启后没有天生武器时正常拦住。");
+  bool("patchHasKnowledge", "I2 让手工添加的知识真正生效（上游 issue #1412）",
+    "系统判断「角色有没有某项知识」时只读背景给的那一份，GM 手工加的知识一律当作不存在——用「评估强度」「洞察弱点」时本该拿到的 +2 祝福不会出现。开启后改读角色的知识聚合值。");
+  bool("patchPrivateBiography", "I3 修补私密传记的泄漏（上游 issue #1406）",
+    "<strong>这是信息泄漏</strong>：角色卡把「私密传记」无条件渲染给所有能打开卡的人，权限设成 limited/observer 的玩家照样能原文读到 GM 私记。提示语写着「仅拥有者可见」，实现却没兑现。开启后非拥有者看不到该字段。");
+  bool("patchSkillDialogSwap", "B4 回搬：掷骰对话框里换了技能却没生效（上游 798a8638）",
+    "多技能团队检定时，玩家在对话框里换成另一项技能，系统掷的仍然是默认那一项——对话框的返回值被丢掉了。上游已在开发版修好（尚未发布），本项把它回搬。单技能检定不受影响。");
   bool("patchEnchantmentBonus", "B1/B2 回搬：词缀推导的附魔加值不生效（上游 bea623d8）",
     "附魔加值在数据准备的<strong>太早</strong>阶段就被算死，而词缀要到派生阶段才解析完——给武器加词缀后攻击掷骰里没有附魔加值、给护甲加词缀后闪避防御不涨，手动把附魔等级改成同一档反而就好了。上游已在开发版修好（尚未发布），本项把它回搬。");
   bool("patchCurrencyPopout", "B3 回搬：角色卡弹成独立窗口后货币归零（上游 1659465a）",

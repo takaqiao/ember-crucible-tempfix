@@ -33,7 +33,15 @@ not grant any rights to Crucible or Ember themselves, neither of which is
 redistributed here — this module contains no assets, compendium content, or
 packaged code from either. Using it requires your own licensed installation.
 
-Short excerpts of upstream source are quoted in the documentation, and one
-patch (N1) reproduces the control flow of an upstream hook it must replace
-wholesale, for interoperability. All such material remains the property of its
-respective copyright holders.
+Short excerpts of upstream source are quoted in the documentation. Two patches
+reproduce upstream control flow for interoperability, because the defect they
+fix sits mid-function and cannot be reached by wrapping: N1 (an Ember action
+hook it must replace wholesale) and B4 (a Crucible method, reproduced with the
+upstream fix applied). Both carry source-signature guards and retire themselves
+once upstream changes the code they mirror. All such material remains the
+property of its respective copyright holders.
+
+Note that Crucible is distributed under a restrictive license which, at the
+time of writing, grants no permission to modify, publish, or distribute the
+system or its data. This module redistributes none of it — it patches at
+runtime against the user's own licensed installation.
