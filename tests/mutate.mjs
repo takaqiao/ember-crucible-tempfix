@@ -13,6 +13,8 @@ const ROOT = "C:/Users/Taka/Desktop/fvtt/ember-crucible-tempfix";
 const SRC = `${ROOT}/scripts/tempfix.mjs`;
 const BAK = `${SRC}.mutbak`;
 const HARNESS = `${ROOT}/tests/tempfix_harness.mjs`;
+/** 从清单读版本，避免变异表里写死版本号（一发版就失配） */
+const MANIFEST_VERSION = JSON.parse(readFileSync(`${ROOT}/module.json`, "utf8")).version;
 
 /** [标签, 原文, 替换成] —— 原文必须在文件里**恰好出现一次**，否则算测试自身的缺陷 */
 const MUTATIONS = [
@@ -53,7 +55,10 @@ const MUTATIONS = [
   ["I6 开启时也乱清一遍", "    if ( !active ) {\n      // 上游只清了 controlled", "    if ( true ) {\n      // 上游只清了 controlled"],
 
   // ── 缓存旧脚本的检测（用户 VPS 上「清单 0.7.0、实际跑 0.2.0」逼出来的）
-  ["SCRIPT_VERSION 与清单脱节（忘了同步）", 'const SCRIPT_VERSION = "0.7.2";', 'const SCRIPT_VERSION = "0.0.1";'],
+  // ⚠ 不要在这里写死版本号 —— 每次发版都会让这条变异失配（已经栽过一次）。
+  //   从 module.json 读，和被测代码用同一个真源。
+  ["SCRIPT_VERSION 与清单脱节（忘了同步）",
+   `const SCRIPT_VERSION = "${MANIFEST_VERSION}";`, 'const SCRIPT_VERSION = "0.0.1";'],
   ["stale 判据反了", "stale: !!manifest && (manifest !== SCRIPT_VERSION)",
                    "stale: !!manifest && (manifest === SCRIPT_VERSION)"],
   ["读不到清单时误报过期", "stale: !!manifest && (manifest !== SCRIPT_VERSION)",
