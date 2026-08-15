@@ -57,7 +57,7 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | **E1** | 「稳定护佑」把酸性抗性算成 **NaN**，此后每次酸性结算都传播 NaN | ember |
 | **E2** | Wirrun 猎物加骰 / Vrjnhar 顽强体力**从来没触发过**（按猜出来的 id 查效果） | ember |
 
-> **状态**：全部 27 条只有静态取证 + 179 条离线断言（另有 46/46 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
+> **状态**：全部 27 条只有静态取证 + 184 条离线断言（另有 48/48 变异测试证明断言真的会红），**尚未在真实牌桌上验证过**。
 > 详见 `HANDOFF.md` §3 的验证表。
 
 ---
@@ -326,6 +326,15 @@ emberCrucibleTempFix.diagnose()
   `crucible.api.hooks.talent` 里的条目，并带一道 **guard**：
   原实现源码里必须还能看到指定字符串，**上游一改就自动放弃**。
 - 每次包装前都检查 `__tempfixPatched` 标记，重复安装是安全的。
+- **与 crucible 自带的 Ember 兼容层不冲突。** crucible 内建了一层
+  `EMBER_PATCHES = {"0.5.1": …}`（`:45771`），由 `applyEmberPatches()`（`:45782`）在 setup 阶段套用，
+  闸门是 `if (isNewerVersion(ember.version, emberVersion)) continue;` ——
+  **装 Ember 0.6.0 时它整层跳过**，不会与本模块争同一批钩子。
+  （这也说明上游认可「按 Ember 版本闸门」这个形状，本模块的 `fixedInEmber` 与它同源。）
+- **闸门有三条轴**：数据形状检测 / `__guard` 源码特征串 / 版本上限。
+  版本上限又分两轴 —— crucible 侧的缺陷按 `game.system.version` 封顶，
+  **ember 侧的数据缺陷按 `ember.version` 封顶**（上游修数据 ≠ 系统发版）。
+  三条轴的失败方向一律是**保守生效**：读不到就继续打补丁。
 - 与 `crucible-cn` / `ember_cn_unofficial` 两个汉化模块互不干涉：
   那两个只经 babele 改字符串，本模块只碰动作的判据、标签与 usage。
 - 上游一旦修好对应缺陷，把对应开关关掉即可 —— 多数补丁还会自己检测上游数据形状而失效
