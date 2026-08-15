@@ -168,7 +168,12 @@ const HOOKS_ACTION = {
   }),
   abyssMarkUnmaking: Object.freeze({
     canUse() { this.emberCanUseRan = true; },
-    preActivate() { throw new Error("ember 的坏实现不应该被调用到"); }
+    // ember.mjs:125607 的坏实现。**源码里必须含 "abyssMarkUnmak0" 字面量** ——
+    // 那正是 N1 两侧 guard 认的特征串；桩件缺了它，补丁会判定「上游已变」而退让。
+    preActivate() {
+      this.effects[0]._id = "abyssMarkUnmak0";
+      throw new Error("ember 的坏实现不应该被调用到");
+    }
   })
 };
 
@@ -313,8 +318,14 @@ class CrucibleActor {
  * 来判断上游是否仍然拒绝 turns。所以这里必须是一个源码里真的含 "turns" 字面量的函数。
  */
 class CrucibleActiveEffect {
+  constructor(duration) { if ( duration ) this.duration = duration; }
   prepareBaseData() {}
-  _preCreate() {
+  /** 复刻 `:39567` 的 `this.updateSource({...})`——`_preCreate` 里就是这样改自己的 */
+  updateSource(changes) { for ( const [k, v] of Object.entries(changes) ) {
+    if ( v && (typeof v === "object") && !Array.isArray(v) ) Object.assign(this[k] ??= {}, v);
+    else this[k] = v;
+  } }
+  async _preCreate() {
     if ( ["months", "turns"].includes(this.duration.units) ) return false;
   }
 }
@@ -856,6 +867,52 @@ console.log("\nN10 的上游 guard（上游放宽后必须自动停用）");
   check("拦截还在时照常改写", b.effects[0].duration.units === "rounds");
 }
 
+console.log("\nN12：物品自带效果的 turns 时长（N10 的 preActivate 够不着的那一半）");
+{
+  const AE = CONFIG.ActiveEffect.documentClass;
+  const mk = duration => new AE(duration);
+
+  // 上游 :39581 的拦截还在时：单位被改掉，效果因此**建得出来**（不再返回 false）
+  const e1 = mk({ value: 6, units: "turns", expiry: null });
+  const r1 = await e1._preCreate({}, {}, {});
+  check("N12 单位改成 rounds", e1.duration.units === "rounds", e1.duration.units);
+  check("N12 数值不动", e1.duration.value === 6, String(e1.duration.value));
+  check("N12 expiry 按上游迁移映射补成 turnEnd", e1.duration.expiry === "turnEnd", String(e1.duration.expiry));
+  check("N12 效果不再被拒绝创建", r1 !== false, String(r1));
+
+  // 已经有 expiry 的不许覆盖（`??=` 的语义）
+  const e2 = mk({ value: 3, units: "turns", expiry: "turnStart" });
+  await e2._preCreate({}, {}, {});
+  check("N12 已有 expiry → 不覆盖", e2.duration.expiry === "turnStart", String(e2.duration.expiry));
+
+  // 不相干的单位一律不碰
+  const e3 = mk({ value: 2, units: "rounds", expiry: "turnStart" });
+  await e3._preCreate({}, {}, {});
+  check("N12 rounds 不碰", e3.duration.units === "rounds" && e3.duration.expiry === "turnStart");
+
+  // months 仍然该被上游拒绝——我们只放行 turns，不顺手把另一个也放了
+  const e4 = mk({ value: 1, units: "months", expiry: null });
+  check("N12 不顺手放行 months", (await e4._preCreate({}, {}, {})) === false);
+
+  // 反向：关掉开关 → 回到上游原行为（照样被拒）
+  setSetting("ember-crucible-tempfix.patchTurnsDuration", false);
+  const e5 = mk({ value: 6, units: "turns", expiry: null });
+  check("N12 关掉开关 → 回到上游原行为（仍被拒绝）", (await e5._preCreate({}, {}, {})) === false);
+  check("N12 关掉开关 → 也不改数据", e5.duration.units === "turns", e5.duration.units);
+  setSetting("ember-crucible-tempfix.patchTurnsDuration", true);
+
+  // guard：上游一旦放宽限制，这条必须退让。这里验证的是 installPrototypePatches 的判据，
+  // 不是包装体的运行时分支——所以要在一个**未包装**的类上重新走一遍安装。
+  class RelaxedAE {
+    async _preCreate() { return undefined; }          // 源码里不再有那串特征
+  }
+  const realDoc = CONFIG.ActiveEffect.documentClass;
+  CONFIG.ActiveEffect.documentClass = RelaxedAE;
+  globalThis.emberCrucibleTempFix.installPrototypePatches();
+  check("N12 上游放宽后不再包装", !RelaxedAE.prototype._preCreate.__tempfixPatched);
+  CONFIG.ActiveEffect.documentClass = realDoc;
+}
+
 console.log("\nN11 符文 Spellcraft 词缀的训练等级");
 {
   // 复刻真实调用：this 绑定 actor **文档**（文档上没有 training getter）
@@ -935,10 +992,13 @@ console.log("\nC 系列：crucible 自身的缺陷");
   // C1 吞噬的效果 ID（常量改写，可逆）
   const sw = crucible.api.hooks.action.swallow;
   check("C1 常量已换成合法的 16 字符", /^[a-zA-Z0-9]{16}$/.test(sw._SWALLOWED_EFFECT_ID), sw._SWALLOWED_EFFECT_ID);
+  // ⚠ 关掉开关**故意不还原**成坏值：还原会让本次会话里已经被吞下去的目标再也放不出来
+  //   （「反刍」按坏 id 查、查不到 → token 保持 hidden）。而坏值本来就是非法的，
+  //   留着合法 id 不造成任何伤害。要回到上游原样就停用模块并刷新。
   setSetting("ember-crucible-tempfix.patchSwallowEffectId", false);
-  check("C1 关掉开关 → 还原成上游 17 字符原值", sw._SWALLOWED_EFFECT_ID === "swallowed00000000", sw._SWALLOWED_EFFECT_ID);
+  check("C1 关掉开关不还原坏值（否则已吞的目标会被锁死）", sw._SWALLOWED_EFFECT_ID === "swallowed0000000", sw._SWALLOWED_EFFECT_ID);
   setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
-  check("C1 再打开 → 重新修正", sw._SWALLOWED_EFFECT_ID.length === 16);
+  check("C1 再打开仍是合法 id", sw._SWALLOWED_EFFECT_ID.length === 16);
 
   // ⚠ 顺序要紧：警告是按 key 去重的（warnedGuards），所以「不该报警」这条必须排在
   //   「未知非法值会报警」**之前**，否则被去重吃掉、断言永远打不响（变异测试抓出来的）。
@@ -1281,6 +1341,18 @@ console.log("\nD 系列：描述与数据的伤害类型不一致");
   check("selfDestruct 判据要 piercing+fire 同时在", onlyFire.usage.damageType === "fire");
 }
 
+/**
+ * 不出现在任何补丁表里、但确实有代码读的设置键。
+ * 每一条都注明消费点，否则这个「孤儿开关」断言会退化成一张许可名单。
+ */
+const EXPECTED_ORPHAN_SETTINGS = new Set([
+  "patchSwallowEffectId",   // applySwallowEffectId()，applyToggles 里直接调
+  "patchAffixTraining",     // installAffixTrainingFix()
+  "patchFlankingToggle",    // installFlankingToggleFix()
+  "patchDamageTypes",       // patchDamageTypes()，setup 阶段一次性改 CONFIG
+  "patchRuneCantrips"       // P3：在 callActorHooks 包装里就地判定（tempfix.mjs:1636/1646），不走补丁表
+]);
+
 console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍然要能用）");
 {
   const ACT = () => globalThis.emberCrucibleTempFix.ACTION_PATCHES;
@@ -1333,6 +1405,82 @@ console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍
   setSetting("ember-crucible-tempfix.patchSuddenBite", true);
   check("读不到 Ember 版本 → 保守地继续生效", !!ACT().suddenBite);
   delete p2.fixedInEmber;
+
+  // 版本上限必须**也管得到原型补丁**。这是中央表 VERSION_CEILINGS 的存在理由：
+  // 在它之前，闸门只作用于 PATCH_DEFS / UNIVERSAL_DEFS，而 B 系列（上游一发布
+  // 就该退休的五条回搬）恰恰全是 PROTOTYPE_PATCHES —— fixedIn 写了也是死字。
+  const ceilings = globalThis.emberCrucibleTempFix.VERSION_CEILINGS;
+  const bumpB1 = v => { ceilings.patchEnchantmentBonus = { fixedIn: v }; };
+  const realB1 = ceilings.patchEnchantmentBonus;
+
+  const rollB1 = () => {
+    const w = new CrucibleWeaponModel();
+    w.__affixEnchantment = 3;
+    w.prepareBaseData(); w.prepareDerivedData();
+    return w.actionBonuses.enchantment;
+  };
+
+  bumpB1("0.11.0");
+  check("原型补丁：当前版本低于 fixedIn → 仍然生效", rollB1() === 3, String(rollB1()));
+  bumpB1("0.10.1");   // = 当前系统版本
+  check("原型补丁：当前版本追上 fixedIn → 自动停用", rollB1() === 0, String(rollB1()));
+  bumpB1("0.10.0");
+  check("原型补丁：当前版本高于 fixedIn → 自动停用", rollB1() === 0, String(rollB1()));
+
+  // 保守回退这条轴对原型补丁同样要成立
+  const realVersion2 = game.system.version;
+  delete game.system.version;
+  check("原型补丁：读不到系统版本 → 保守地继续生效", rollB1() === 3, String(rollB1()));
+  game.system.version = realVersion2;
+
+  // Ember 轴也要能管到原型补丁
+  ceilings.patchEnchantmentBonus = { fixedInEmber: "0.6.0" };
+  globalThis.ember = { version: "0.6.0" };
+  check("原型补丁：Ember 版本追上 fixedInEmber → 自动停用", rollB1() === 0, String(rollB1()));
+  delete globalThis.ember;
+  check("原型补丁：读不到 Ember 版本 → 保守地继续生效", rollB1() === 3, String(rollB1()));
+
+  ceilings.patchEnchantmentBonus = realB1;
+  check("恢复真实上限（0.10.2 未发）→ B1 照常生效", rollB1() === 3, String(rollB1()));
+
+  // settingOn 的**失败方向**必须是「保守生效」。
+  // 这条不是理论洁癖：设置在 init 注册，而原型补丁的包装体在 setup 之后才被调用；
+  // 万一注册没跑到（世界不是 crucible 系统、别的模块在 init 抛错打断了钩子链），
+  // 读不到设置的正确反应是**继续打补丁**，而不是把 30 条补丁静默全关 ——
+  // 后者会让人以为模块装上了、其实一条都没生效。
+  {
+    const realGet = game.settings.get;
+    game.settings.get = () => { throw new Error("模拟：设置尚未注册"); };
+    const w = new CrucibleWeaponModel();
+    w.__affixEnchantment = 3;
+    w.prepareBaseData(); w.prepareDerivedData();
+    check("读不到设置 → 补丁仍然生效（保守方向）", w.actionBonuses.enchantment === 3, String(w.actionBonuses.enchantment));
+    game.settings.get = realGet;
+    const w2 = new CrucibleWeaponModel();
+    w2.__affixEnchantment = 3;
+    w2.prepareBaseData(); w2.prepareDerivedData();
+    check("设置恢复后行为不变", w2.actionBonuses.enchantment === 3);
+  }
+
+  // 所有表里引用的设置键都必须**确实注册过**。写错一个键，settingOn() 会读不到设置、
+  // 按保守方向返回 true —— 也就是那条补丁**永远关不掉**，而且一声不吭。
+  const regd = globalThis.emberCrucibleTempFix.__registeredSettings;
+  const T = globalThis.emberCrucibleTempFix;
+  const referenced = [
+    ...Object.keys(ceilings).map(k => [k, "VERSION_CEILINGS"]),
+    ...T.PATCH_DEFS.map(d => [d.setting, "PATCH_DEFS"]),
+    ...T.UNIVERSAL_DEFS.map(d => [d.setting, "UNIVERSAL_DEFS"]),
+    ...T.PROTOTYPE_PATCHES.map(p => [p.setting, "PROTOTYPE_PATCHES"]),
+    ...T.HOOK_OVERRIDES.filter(o => o.setting).map(o => [o.setting, "HOOK_OVERRIDES"])
+  ];
+  const dead = referenced.filter(([k]) => !regd.has(k));
+  check(`各表引用的设置键全部注册过（共 ${referenced.length} 处引用）`,
+    dead.length === 0, dead.map(([k, t]) => `${t}:${k}`).join(", "));
+
+  // 反向：注册了却没人引用的设置键 = 面板上摆着一个不管事的开关
+  const used = new Set(referenced.map(([k]) => k));
+  const orphan = [...regd].filter(k => !used.has(k) && !EXPECTED_ORPHAN_SETTINGS.has(k));
+  check("没有注册了却无人引用的开关", orphan.length === 0, orphan.join(", "));
 
   // N11 的退休闸门：上游补上 CrucibleActor#training 之后就不该再改词缀钩子
   Object.defineProperty(CrucibleActor.prototype, "training", { get() { return this.system.training; }, configurable: true });

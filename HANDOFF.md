@@ -41,6 +41,7 @@
 | **N6** `antigravityStone` | 纯自身效果必须选别人才能用 | target 压根没填 |
 | **N7** `darkflameCirclet` | 用一次崩在出卡之前，资源不扣、卡不出 | composed 标签只对法术合法 |
 | **N11** 12 个符文 Spellcraft 词缀 | 拿到符文却按「未受训 −4」算；控制台刷错误 | crucible 把 training 写到了文档而非数据模型 |
+| **N12** 原型补丁 | 物品**自带**的效果同样踩 N10，但创建不经过动作 —— `preActivate` 够不着 | 只能包 `CrucibleActiveEffect#_preCreate`；`preCreateActiveEffect` 钩子那条路是死的 |
 
 根因、行号级证据、以及同一份数据里的写法对照，全在 `docs/上游缺陷诊断.md`。
 **不要重新推导** —— 那份文档每条结论都带 `crucible-compiled.mjs` / `ember.mjs` 的行号。
@@ -52,12 +53,20 @@
 ```
 C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── module.json
-├── scripts\tempfix.mjs        ← 全部逻辑（约 1900 行，注释密；顶部有四条共用前提）
+├── scripts\tempfix.mjs        ← 全部逻辑（2097 行，注释密；顶部有四条共用前提）
 ├── README.md                  ← 面向使用者：每个补丁的根因与做法
 ├── HANDOFF.md                 ← 本文件
-├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 撤回记录、§6 已排除清单
-├── tests\tempfix_harness.mjs  ← 离线冒烟测试（不需要 Foundry）
+├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 与 §7 撤回记录、§6 已排除清单
+├── tests\
+│   ├── tempfix_harness.mjs    ← 离线断言 222 条（不需要 Foundry）
+│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（17/17）
 └── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
+    ├── dump_all.mjs / dump_pack.mjs / dump_actions.mjs / index_actions.mjs / find_field.mjs
+    │                           ← LevelDB 合集离线导出与检索（node；需要仓库根的 classic-level）
+    ├── console_action_sweep.js ← **动作遍历器**（浏览器控制台）：在准备好的活对象上跑 16 条断言
+    │                             （0.6.0 修好了模态对话框 BLOCKER，现在可以直接 `await crucibleSweep()`）
+    └── console_party_token_diagnose.js
+                                ← 六边形/远景地图切换后队伍 token 隐形的分层取证（浏览器控制台）
 ```
 
 Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
@@ -73,11 +82,18 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**201 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**201 passed / 0 failed**。
+**222 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**222 passed / 0 failed**。
 
-桩件本身也验过 —— 变异测试把 55 处补丁逐个改回坏写法，**55/55 全部被抓住**。
-（脚本没有入库，重跑的话照 §5 的写法现写一个即可：备份 → 字符串替换 → 跑 harness → finally 还原。）
+断言本身也验过 —— 变异测试把补丁逐个改回坏写法，期望 harness **变红**：
+
+```powershell
+node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
+```
+
+当前 **17 处变异，17/17 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
+加补丁时**同时加一条变异**：一条永远绿的断言和没有断言是一回事 ——
+这个脚本抓出过多条假绿，最近一条是「`settingOn` 读不到设置时保守生效」从来没被断言过。
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。
 > 桩件复刻的是「读出来的语义」。真实世界验证没有替代品。
@@ -86,7 +102,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 开 Crucible 世界 → 启用模块 → 选中角色 token → 控制台 `emberCrucibleTempFix.diagnose()`。
 
-逐项要确认的。**每行都标了设置键名**，好让「30 个开关是不是都测过了」可以机械核对
+逐项要确认的。**每行都标了设置键名**，好让「开关是不是都测过了」可以机械核对
 （表的行数 > 开关数，因为有些开关管多个动作、必须分开验 —— 这正是以前漏测的地方）。
 
 > **中文名以你装的汉化模块为准**，可能与本表不同。找不到就在控制台按 id 查：`_token.actor.actions.<id>`。
@@ -113,7 +129,8 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 | 设置键 | # | 怎么看 | 期望 |
 |---|---|---|---|
-| `patchTurnsDuration` | **N10** | 用任一血统的招牌变身（如 `tyraphicTransformation`） | **身上真的出现效果图标**且 N 轮后消失；`patches.universal` 含 turnsDuration |
+| `patchTurnsDuration` | **N10** | 用任一血统的招牌变身（如 `tyraphicTransformation`） | **身上真的出现效果图标**且 N 轮后消失；`patches.universal` 含 turnsDuration<br>✅ **已由用户实测确认缺陷存在**（「顽强体力」用了没效果，1 专注 + 1 英勇白扣） |
+| `patchTurnsDuration` | **N12**（同一开关） | 把 `crucible-adventure` 的 Mythspire Guardian 拖上桌 —— 它的「Nearing Death」是 `transfer:true` | 该 token 身上直接带着「Wasting Poison」效果；控制台**不再**出现 `does not support effect durations of unit "turns"` |
 | `patchEffectChanges` | N2 | 用强化护盾（`sentinelShielding`）—— **先确认 N10 那格过了** | 图标出现后，护甲防御 +3 真的涨了 |
 | `patchAbyssMark` | N1 | 暴击后用湮灭之印（`abyssMarkUnmaking`） | 正常出卡、扣资源；`patches.hookOverrides` 显示已覆盖 |
 | `patchStaggerDuration` | N3 | 被排斥踢（`sentinelKick`）命中 | 踉跄 1 轮后消失，不是 ∞ |
@@ -160,8 +177,11 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 
 ## 4. 已知的不确定处（**别当成已验证**）
 
-1. **全部 30 条都只有静态取证 + 桩件测试，一次真实 Foundry 验证都没做过。**
+1. **31 条里只有 N10 得到过真实验证。** 其余全部只有静态取证 + 桩件断言。
    这是当前最大的风险面，也是下一步唯一该做的事。
+   - ✅ **N10 已确认**：用户实测「顽强体力」（`formidableStamina`）用了没任何效果，
+     1 专注 + 1 英勇白扣 —— 症状与诊断逐字吻合。这是第一条、也是目前唯一一条被现实证实的诊断。
+   - 需要注意：**「缺陷存在」被证实了，「补丁修好了它」还没有。** 两件事要分开记。
 2. **N2 的第三条加成（威吓 +2 骰运）没有补。**
    `rollBonuses` 每轮被重置成恰好 `{damage:{}, boons:{}, banes:{}}`（`:41179`），
    而骰运读取点（`:36852`）是全局的、**无法按技能限定**。要做只能在 `prepareSkillCheck` 分支里按
@@ -194,13 +214,20 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
   `CrucibleAction#clone()` 也会用**单条记录**调 `prepareActions` 钩子（`:19152`），不能往那种调用里塞东西。
 - 小戏法的源数据是 `ready` 时从 `crucible.talent` 合集**读**的，不是硬编码，为的是带上 babele 的中文名与描述。
 - **每个钩子体第一行都必须是归属判据**（形状或 owner）—— 语料里存在同 id 不同数据的动作。
+- **版本上限走中央表 `VERSION_CEILINGS`（设置键 → 上游哪版修好）**，不要再往补丁对象上挂
+  `fixedIn`。历史教训：闸门原先只作用于 `PATCH_DEFS` / `UNIVERSAL_DEFS`，
+  而 B 系列（上游一发布就该退休的五条回搬）**全是 `PROTOTYPE_PATCHES`** —— 写了也是死字。
+- **原型补丁一律经 `settingOn()` 读开关**（它同时查中央表），不要直接 `game.settings.get`。
+  `settingOn` 的失败方向是**保守生效**，这有断言盯着。
+- 加补丁的同时**在 `tests/mutate.mjs` 里加一条变异**。一条永远绿的断言和没有断言是一回事。
 
 ---
 
 ## 6. 下一步（按顺序）
 
-1. **开世界跑第 3 节那张表。** 30 个开关一条真实验证都没有，这是唯一该先做的事。
-   表里每行都标了设置键名 —— 跑完对一遍键名，就知道 30 个开关是不是都覆盖到了。
+1. **开世界跑第 3 节那张表。** 除 N10 的缺陷侧外一条真实验证都没有，这是唯一该先做的事。
+   表里每行都标了设置键名 —— 跑完对一遍键名，就知道开关是不是都覆盖到了。
+   建议从 `patchTurnsDuration` 起手：它的缺陷侧已经确认，是唯一一个能拿现实做对照的。
 2. 按实测结果订正本文件第 4 节。
 3. 提两份 issue（清单已写好，见 `docs/上游缺陷诊断.md` 末尾）：
    一份给 `foundryvtt/crucible`（3 条），一份给 Mage Hand Press（8 条）。

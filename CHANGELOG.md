@@ -2,6 +2,103 @@
 
 本文件记录对玩家可见的行为变化。行号级的取证过程在 `docs/上游缺陷诊断.md`。
 
+## 0.6.0
+
+补丁 30 → **31**。本版没有新扫一批缺陷，而是把**已有的每一条都拿去对账**，
+结果订正了三处硬伤：一条补丁覆盖不全、一个影响面数字漏数一半、版本闸门有十条补丁根本管不到。
+
+### 新增 N12 —— N10 漏掉的另一半
+
+N10 在 `preActivate` 里改动作产出的效果时长，管不到**物品文档自己带的**效果。
+后者的创建路径（`transfer:true` 的持有即生效、GM 手动拖、宏里 `createEmbeddedDocuments`）
+一条都不经过动作。全包深扫在 `items[].effects[]` 上找到 **22 个**同样坏掉的效果，
+最扎眼的是 Mythspire Guardian 的「Nearing Death」—— `transfer:true`，
+**这个天赋一被持有就该生效，实际上永远建不出来。**
+
+只能包 `CrucibleActiveEffect#_preCreate`。挂 `preCreateActiveEffect` 钩子那条路是**死的**：
+核心的创建流程（`foundry.mjs:80806-80808`）是
+
+```js
+let documentAllowed = await doc._preCreate(...) ?? true;
+documentAllowed &&= (noHook || Hooks.call(`preCreate${type}`, ...));
+```
+
+`_preCreate` 先跑、crucible 的拒绝就在它里面，而 `&&=` 在左边已经是 `false` 时
+**根本不会调用**右边的钩子。与 N10 共用 `patchTurnsDuration` 开关。
+
+### ⚠ 订正：N10 的影响面是 38 个动作，不是 19
+
+早先写的「19 个动作 / 20 条效果，冒险包里还有重复副本」是**漏数**，漏了两类：
+
+- 已经迁成 `units:"turns"` 新形的（`shieldBash`、`steamVent`）——当时只统计了未迁移的 `{turns:N}`；
+- 冒险 / 预生成包里 **actor 内嵌物品**上的那些 —— 它们不是「重复副本」，
+  而是玩家真会拖上桌用的独立实例。
+
+按不同动作 id 去重实为 **38 个**，其中 **crucible 自己的内容占 7 个**
+（`devourThoughts`、`mindFlay`、`eldritchEmanation`、`ferociousHowl`、`pestilentLash`、
+`shieldBash`、`steamVent`）—— 也就是说这不只是「ember 数据配 crucible 校验」的接缝问题，
+**crucible 单机也踩**。另有 ember 的一批消耗品（炼金榴弹 / 冰霜瓶 / 电解安瓿 / 三枚宇宙宝石）。
+
+### ⚠ 订正：版本上限此前对十条原型补丁完全不生效
+
+`fixedIn` / `fixedInEmber` 只作用于 `PATCH_DEFS` 与 `UNIVERSAL_DEFS`，
+而 **B 系列（上游一发布就该退休的那五条回搬）恰恰全是 `PROTOTYPE_PATCHES`** ——
+写了也是死字。现在改成中央表 `VERSION_CEILINGS`，三类补丁走同一条判定，
+B1–B5 填 `0.10.2`（0.10.2 至今未发，所以现在全部空转）。
+
+### 其他订正
+
+- **X1 的覆盖面是扫出来的了。** 把两侧 packs 全部 409 条动作过了一遍，
+  先按 `propagate` 求闭包（`natural`→`melee`→`strike` 这种链会补上掷骰实现，
+  不求闭包会误报 13 条），结果只有三条真的缺实现：X1 这两个，
+  加上 ember 的 `waterAversion`。第三条**故意不修** —— 它自己的描述里写着
+  「ALPHA ONE: This action needs further balancing」，是作者挂着的半成品。
+  同时说清楚 X1 **补的是实现不是数值**：防御、伤害类型、属性加值、−6 减值
+  全部读自动作自己的标签，本模块不发明任何数字。
+- **`docs/上游缺陷诊断.md` §7 撤回一条。** 那里把 `swallow` 的 17 字符 `_id` 归为
+  「只上报、不补」，理由写的是「因 scope 未设而潜伏」——**臆断**。
+  `_id` 的合法性与 scope 无关，它和 N1 是同一条链。它现在是 C1，已修。
+- **`patchDamageTypes` 的提示补上前提**：`devourThoughts` 来自 playtest（试玩）合集，
+  没导入过它的世界这一条自然不触发。
+- **`HOOK_OVERRIDES` 现在认 `setting` 字段** —— 此前 N1 的天赋侧覆盖是唯一
+  「关不掉」的补丁，与 README 里「每一项都能单独关掉」的说法不符。
+- **C1 关掉开关后不再还原坏 ID** —— 还原会让已经吞下去的目标永远吐不出来。
+
+### 设置面板重排
+
+30 个平铺开关按「① 影响最大 / ② 动作放不出去 / ③ 结算错了 / ④ 回搬自上游 / ⑤ 显示与界面」
+五组重排，名称带组号前缀。**设置键一个都没改**，升级后已有的开关状态照旧。
+
+### 遍历器的 BLOCKER 已修复
+
+`probes/console_action_sweep.js` 此前被 `iUnderstandTheBlocker` 闸门锁着，
+因为它跳过 `_canUse()` 直接调 preActivate，会让 `delay` 等四个动作弹出几百个模态对话框，
+**而写盘熔断在此期间一直遮着 `DatabaseBackend` —— 世界会写不进任何东西。** 三处修复：
+
+1. `MODAL_PREACTIVATE_IDS` 跳过表，走「未覆盖」分支而**不是** `return null`
+   （后者会被记成「S2 跑通了」，拿没跑过 preActivate 的形态去判定 = 假绿）。
+2. 遮 `DialogV2.wait/prompt/confirm/input`，漏网的弹框立刻抛错并记账。
+   还原走 `getOwnPropertyDescriptor` + `defineProperty` —— 这四个是类自身的 own static 属性，
+   用 `delete` 还原会把真实实现永久删掉。
+3. 三个熔断/挂起动作全部移进 `try`，restore 先初始化成空函数。
+
+另外两处：新增 **D-D3** 断言覆盖 N12；效果文档扫描此前只收 world actor 与世界物品，
+**漏掉了 actor 内嵌物品那一层** —— 而 N12 的目标恰恰全在那里。
+B-W1（覆盖 I1）加了可判性检查：宿主自带天生武器时它的判据永远不成立，
+现在会明说「本次跑不出 I1」，而不是让报告显示成「未命中」。
+
+### 测试
+
+201 → **222 条断言**。变异测试脚本这次**进仓库了**（`tests/mutate.mjs`，此前每次现写）：
+17 处变异，**17/17 全部被抓住**，含一条此前的假绿 ——
+`settingOn` 的「读不到设置就保守生效」这条失败方向从来没被断言过，现在补上了。
+
+### 第一条被现实证实的诊断
+
+用户实测「顽强体力」用了没任何效果、1 专注 + 1 英勇白扣 —— 与 N10 的诊断逐字吻合。
+这是 31 条里**唯一**一条得到真实验证的。注意「缺陷存在」被证实了、
+「补丁修好了它」还没有，两件事分开记。
+
 ## 0.5.0
 
 补丁 27 → **30**。本版收尾显示与交互层三条。

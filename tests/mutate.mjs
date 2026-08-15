@@ -1,0 +1,106 @@
+/**
+ * 变异测试：把 tempfix.mjs 里的补丁逐个改回「坏写法」，跑 harness，**期望它变红**。
+ *
+ * 目的不是测补丁，是测**断言**：一条永远绿的断言和没有断言是一回事。
+ * 任何一条变异后 harness 仍然全绿 ⇒ 那条断言是假绿，必须修断言而不是修补丁。
+ *
+ * 用法：node mutate.mjs [过滤子串]
+ */
+import { readFileSync, writeFileSync, copyFileSync, unlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+
+const ROOT = "C:/Users/Taka/Desktop/fvtt/ember-crucible-tempfix";
+const SRC = `${ROOT}/scripts/tempfix.mjs`;
+const BAK = `${SRC}.mutbak`;
+const HARNESS = `${ROOT}/tests/tempfix_harness.mjs`;
+
+/** [标签, 原文, 替换成] —— 原文必须在文件里**恰好出现一次**，否则算测试自身的缺陷 */
+const MUTATIONS = [
+  // ── N12（本轮新增）
+  ["N12 不改单位", 'this.updateSource({ duration: { units: "rounds", expiry: this.duration.expiry ?? "turnEnd" } });',
+                   '/* mutated: 不改 */'],
+  ["N12 改错方向（rounds→turns）", 'units: "rounds", expiry: this.duration.expiry ?? "turnEnd"',
+                   'units: "turns", expiry: this.duration.expiry ?? "turnEnd"'],
+  ["N12 expiry 用 ?? 改成强制覆盖", 'expiry: this.duration.expiry ?? "turnEnd"', 'expiry: "turnEnd"'],
+  ["N12 顺手放行 months", '(this.duration?.units === "turns")',
+                   '["turns","months"].includes(this.duration?.units)'],
+  ["N12 无视开关", 'if ( settingOn(setting) && (this.duration?.units === "turns") ) {',
+                   'if ( (this.duration?.units === "turns") ) {'],
+
+  // ── 版本上限中央表（本轮新增）
+  ["版本闸门恒不生效", "  if ( !supersededByUpstream(fixedIn, fixedInEmber) ) return false;",
+                   "  return false;\n  if ( !supersededByUpstream(fixedIn, fixedInEmber) ) return false;"],
+  ["settingOn 忽略版本上限", "  return on && !ceilingReached(key);", "  return on;"],
+  ["版本比较方向反了", "const reached = (fixed, current) => !!fixed && !!current && !iu(fixed, current);",
+                   "const reached = (fixed, current) => !!fixed && !!current && iu(fixed, current);"],
+  ["读不到版本时改成保守停用", "  if ( typeof iu !== \"function\" ) return false;",
+                   "  if ( typeof iu !== \"function\" ) return true;"],
+  ["settingOn 失败方向反了", "  try { on = game.settings.get(MODULE_ID, key); } catch { /* 未注册 → 保守生效 */ }",
+                   "  try { on = game.settings.get(MODULE_ID, key); } catch { on = false; }"],
+
+  // ── N10
+  ["N10 不改单位", '      d.units = "rounds";', '      /* mutated */'],
+  ["N10 expiry 方向写反", '      d.expiry ??= "turnEnd";', '      d.expiry ??= "turnStart";'],
+  ["N10 无视上游 guard", "    if ( !systemRejectsTurns() ) return;            // 上游放宽了就别动它", "    "],
+
+  // ── 原型补丁的 guard
+  ["guard 读包装体而非原实现", "const src = String(guardFn?.__tempfixOriginal ?? guardFn ?? \"\");",
+                   "const src = String(guardFn ?? \"\");"],
+  ["guard 恒通过", "      if ( !src.includes(p.guard.includes) ) {", "      if ( false ) {"],
+
+  // ── B1/B2
+  ["B1 不覆写附魔加值", "      if ( Number.isFinite(fresh) ) this.actionBonuses.enchantment = fresh;", "      "],
+
+  // ── N2 / N3 / N11
+  ["N2 写回顶层（复现上游 bug）", 'e.system.changes = [{ key: "system.defenses.armor.bonus", value: 3, type: "add" }];',
+                   'e.changes = [{ key: "system.defenses.armor.bonus", value: 3, type: "add" }];'],
+];
+
+const original = readFileSync(SRC, "utf8");
+copyFileSync(SRC, BAK);
+
+const runHarness = () => {
+  try {
+    const out = execFileSync(process.execPath, [HARNESS], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { ok: /0 failed/.test(out), out };
+  } catch (e) {
+    return { ok: false, out: String(e.stdout ?? "") + String(e.stderr ?? "") };
+  }
+};
+
+const filter = process.argv[2];
+let caught = 0, missed = 0, bad = 0;
+
+try {
+  const base = runHarness();
+  if ( !base.ok ) {
+    console.error("基线就不是绿的，先修 harness：\n" + base.out.split("\n").slice(-15).join("\n"));
+    process.exit(1);
+  }
+  console.log("基线：" + (base.out.match(/\d+ passed, \d+ failed/) ?? ["?"])[0] + "\n");
+
+  for ( const [label, from, to] of MUTATIONS ) {
+    if ( filter && !label.includes(filter) ) continue;
+    const n = original.split(from).length - 1;
+    if ( n !== 1 ) { console.log(`  ⚠ 变异自身有问题  ${label}（原文出现 ${n} 次，应为 1）`); bad++; continue; }
+    writeFileSync(SRC, original.replace(from, to), "utf8");
+    const r = runHarness();
+    if ( r.ok ) {
+      console.log(`  ❌ 假绿  ${label} —— 改坏了 harness 仍然全绿，这条断言没有约束力`);
+      missed++;
+    } else {
+      const failed = (r.out.match(/(\d+) failed/) ?? [null, "?"])[1];
+      const first = (r.out.match(/ {2}FAIL {2}(.*)/) ?? [null, "(崩溃)"])[1];
+      console.log(`  ✅ 抓住  ${label}  → ${failed} 条断言变红，首条：${first}`);
+      caught++;
+    }
+  }
+} finally {
+  writeFileSync(SRC, original, "utf8");
+  try { unlinkSync(BAK); } catch { /* ignore */ }
+}
+
+console.log(`\n${caught} 抓住 / ${missed} 假绿 / ${bad} 变异自身有问题`);
+const verify = runHarness();
+console.log("还原后复跑：" + (verify.out.match(/\d+ passed, \d+ failed/) ?? ["?"])[0]);
+process.exit((missed || bad || !verify.ok) ? 1 : 0);

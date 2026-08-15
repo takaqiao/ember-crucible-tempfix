@@ -96,7 +96,6 @@
 /*  主函数                                                                      */
 /* ============================================================================ */
 globalThis.crucibleSweep = async function crucibleSweep({
-  iUnderstandTheBlocker = false, // ⛔ 未修复的 BLOCKER 闸门，见文件末尾的说明。不传 true 直接拒跑
   includePacks     = true,   // 扫合集（慢，但覆盖面大得多）
   includeAdventures= true,   // 冒险包：265 个 actor 全嵌在 1 个顶层文档里，不特判必然漏
   hostFallback     = true,   // 无宿主的合集条目：用一个挑定的 actor 现造实例来准备（见 §P 保真度警告）
@@ -107,16 +106,6 @@ globalThis.crucibleSweep = async function crucibleSweep({
   checkIdempotent  = false,  // 对每条动作跑两遍 prepare 并比对（I4 那一类），很慢
   maxUnits         = Infinity
 } = {}) {
-
-  // ⛔ BLOCKER 闸门。runS2（:486）跳过 _canUse()，而 delay/fieldStudy/imbueAffix/amplifyAffix
-  //    的 preActivate 会弹模态对话框；期间写盘熔断一直遮着 DatabaseBackend，
-  //    等于把世界锁成只读直到对话框点完。详见文件末尾。
-  if ( !iUnderstandTheBlocker ) {
-    const msg = "crucibleSweep 已被闸门拦下：存在未修复的 BLOCKER（模态对话框 + 写盘熔断会把世界锁成只读）。"
-      + "确认要跑请传 { iUnderstandTheBlocker: true }，并先备份世界、确保无人在线。";
-    console.error("%c" + msg, "color:#c33;font-weight:bold");
-    return { blocked: true, reason: msg };
-  }
 
   const R = {
     _t: new Date().toISOString(),
@@ -131,6 +120,8 @@ globalThis.crucibleSweep = async function crucibleSweep({
     findings: [],
     byAssertion: {},
     writeAttempts: [],     // 写盘熔断记录 —— 正常必须是空数组
+    dialogAttempts: [],    // 模态对话框熔断记录 —— 非空 = 跳过表漏了一个会弹框的钩子
+    modalSkipped: [],      // 闸门① 主动跳过的会弹框的动作（记为「未覆盖」，不是「通过」）
     tempfixSuspended: [],
     errors: [],
     notes: []
@@ -218,6 +209,19 @@ globalThis.crucibleSweep = async function crucibleSweep({
     /** 没有 dummy ⇒ S2 里 ember 的 preActivate（ember:125605 `if (!target) return`）什么都不写，
      *  N1/N2 会**静默变绿**。所以这不是「通过」，是「未覆盖」。 */
     s2Usable: !!(R.dummy && runPreActivate),
+    /**
+     * B-W1 是**宿主相关**的断言：它只在 `usage.strikes` 为空时成立，
+     * 而「空不空」取决于拿来准备的这个宿主有没有天生武器。
+     * 宿主自带天生武器 ⇒ B-W1 一次都不会触发 ⇒ 报告里 I1 显示为「未命中」，
+     * 读的人会以为 I1 不存在 —— 其实是**这次跑根本没能力判它**。
+     * 所以把可判性单独记一格，别让它冒充「通过」。
+     */
+    w1Evaluable: safe("w1eval", () => {
+      const a = R.host?.actor;
+      if ( !a ) return false;
+      const items = a.items?.contents ?? a.items ?? [];
+      return ![...items].some(i => i?.system?.properties?.has?.("natural"));
+    }, false),
     message: []
   };
   if ( !R.host ) R.preconditions.message.push(
@@ -228,6 +232,10 @@ globalThis.crucibleSweep = async function crucibleSweep({
     "N1/N2 记为「未覆盖」而不是「通过」。");
   if ( !R.env.canvasReady ) R.preconditions.message.push(
     "⚠ canvas 未就绪：T3（贴身距离）仍可判（判据与格制无关），但 `gridDistance` 记为 null。");
+  if ( R.host && !R.preconditions.w1Evaluable ) R.preconditions.message.push(
+    `⚠ 宿主「${R.preconditions.hostName}」自带天生武器 ⇒ B-W1 的判据（usage.strikes 为空）` +
+    "永远不成立，**I1 这次跑不出来**。报告里 I1 显示为「未命中」不等于 I1 不存在。" +
+    "要判 I1：选中一个**没有天生武器**的角色 token 再重跑。");
 
   /* ========================================================================= */
   /*  §W 写盘熔断                                                              */
@@ -310,10 +318,57 @@ globalThis.crucibleSweep = async function crucibleSweep({
     return () => { for ( const [k, v] of Object.entries(suspended) ) TF.ACTION_PATCHES[k] = v; };
   };
 
-  const restoreFuse = installWriteFuse();
-  const restoreTempfix = suspendTempfix();
+  /* ========================================================================= */
+  /*  §M 模态对话框熔断（BLOCKER 闸门 ②）                                       */
+  /* ========================================================================= */
+  /**
+   * 四个 preActivate 钩子会 `await DialogV2.prompt(…)`：
+   * amplifyAffix(:8755) / delay(:9231) / fieldStudy(:9479) / imbueAffix(:9724)。
+   * 闸门 ① 的跳过表已经拦住这四个 id，但**跳过表是按 id 列的白名单，防不住新增的**——
+   * 上游哪天再给别的动作加一个弹框钩子，脚本就又会挂在对话框上，
+   * 而写盘熔断还遮着 DatabaseBackend，世界写不进任何东西。所以这里加第二道：
+   * 把 `DialogV2.wait` 整个换掉（prompt/confirm/input 内部都转调它），
+   * 任何漏网的弹框调用**立刻抛错并记账**，而不是无声等待。
+   *
+   * ⚠ 还原必须走 `getOwnPropertyDescriptor` + `defineProperty`。
+   * 这四个方法是 `DialogV2` **类自身的 own static 属性**（foundry.mjs:37692 起），
+   * 不是继承来的 —— 用 `delete` 还原会把真实实现**永久删掉**，
+   * 直到刷新页面为止全世界的确认框都没了。
+   */
+  const installDialogFuse = () => {
+    const D = foundry?.applications?.api?.DialogV2;
+    if ( !D ) return () => {};
+    const saved = [];
+    for ( const n of ["wait", "prompt", "confirm", "input"] ) {
+      const desc = Object.getOwnPropertyDescriptor(D, n);
+      if ( !desc ) continue;                         // 上游改名了就别硬遮
+      saved.push([n, desc]);
+      Object.defineProperty(D, n, {
+        ...desc,
+        value: async function(...args) {
+          const err = new Error(`模态对话框熔断：DialogV2.${n}`);
+          R.dialogAttempts.push({
+            method: `DialogV2.${n}`,
+            stack: (err.stack || "").split("\n").slice(1, 8).join(" | ")
+          });
+          throw err;                                  // 立刻失败，绝不 await 住
+        }
+      });
+    }
+    return () => { for ( const [n, desc] of saved ) Object.defineProperty(D, n, desc); };
+  };
+
+  // ⚠ 先初始化成空函数再进 try：这三个装载动作本身也可能抛
+  //   （`CONFIG.DatabaseBackend` 结构变了、`DialogV2` 换了命名空间……）。
+  //   放在 try 外面就没人拆熔断，世界会一直写不进东西 —— 那正是本文件末尾 BLOCKER 的第三条。
+  let restoreFuse = () => {};
+  let restoreTempfix = () => {};
+  let restoreDialog = () => {};
 
   try {
+  restoreFuse = installWriteFuse();
+  restoreDialog = installDialogFuse();
+  restoreTempfix = suspendTempfix();
 
   /* ========================================================================= */
   /*  §E 枚举 —— 动作从哪来                                                    */
@@ -335,10 +390,23 @@ globalThis.crucibleSweep = async function crucibleSweep({
       units.push({ action: a, origin, actor: actor ?? a.actor ?? null, item });
     }
   };
+  const packStats = [];
+  const effectDocs = [];                    // D-E1 / D-D3 用
   const harvestActor = (actor, origin) => {
     pushActions(actor.actions, `${origin} > ${actor.name}`, actor);
+    // 效果文档也要收：actor 自己身上的，以及**它每件物品自带的**。
+    // 后者是 D-D3（N12）的主战场 —— 冒险包里 22 个坏时长效果全都挂在
+    // `doc.actors[].items[].effects[]` 上，只收 actions 会把它们整批漏掉。
+    if ( scanEffectDocs ) {
+      for ( const e of actor.effects ?? [] ) effectDocs.push({effect: e, origin: `${origin} > ${actor.name}`});
+    }
     for ( const item of actor.items ?? [] ) {
       pushActions(item.actions, `${origin} > ${actor.name} > ${item.name}`, actor, item);
+      if ( scanEffectDocs ) {
+        for ( const e of item.effects ?? [] ) {
+          effectDocs.push({effect: e, origin: `${origin} > ${actor.name} > ${item.name}`});
+        }
+      }
     }
   };
 
@@ -350,8 +418,6 @@ globalThis.crucibleSweep = async function crucibleSweep({
   }
   const worldItemUnits = units.length - worldActorUnits;
 
-  const packStats = [];
-  const effectDocs = [];                    // E1 用
   if ( includePacks ) {
     for ( const pack of game.packs ) {
       const type = pack.metadata.type;
@@ -371,15 +437,20 @@ globalThis.crucibleSweep = async function crucibleSweep({
           else if ( type === "ActiveEffect" ) effectDocs.push({effect: doc, origin: pack.collection});
           else {
             for ( const a of doc.actors ?? [] ) harvestActor(a, `${pack.collection} > ${doc.name}`);
-            for ( const i of doc.items ?? [] ) pushActions(i.actions, `${pack.collection} > ${doc.name} > ${i.name}`, null, i);
+            for ( const i of doc.items ?? [] ) {
+              pushActions(i.actions, `${pack.collection} > ${doc.name} > ${i.name}`, null, i);
+              if ( scanEffectDocs ) for ( const e of i.effects ?? [] ) {
+                effectDocs.push({effect: e, origin: `${pack.collection} > ${doc.name} > ${i.name}`});
+              }
+            }
           }
         }
       });
       packStats.push({ pack: pack.collection, type, docs: docCount, actionsAdded: units.length - before });
     }
   }
+  // world actor 与其物品的效果已在 harvestActor 里收过；这里只补世界层的独立物品
   if ( scanEffectDocs ) {
-    for ( const a of worldActors ) for ( const e of a.effects ?? [] ) effectDocs.push({effect: e, origin: `world > ${a.name}`});
     for ( const i of Array.from(game.items ?? []) ) for ( const e of i.effects ?? [] ) effectDocs.push({effect: e, origin: `worldItem > ${i.name}`});
   }
 
@@ -387,6 +458,8 @@ globalThis.crucibleSweep = async function crucibleSweep({
     口径: "world actors 的 actions + 其 items 的 actions；world items；" +
           (includePacks ? "全部 Item/Actor/Adventure/ActiveEffect 合集，冒险包递归下钻 doc.actors[].items[].actions" : "（未扫合集）"),
     去重键: "origin::actionId（同一 id 在不同持有者上算不同条目）",
+    效果文档口径: "actor 自身 effects + 其每件物品的 effects + 世界独立物品 + Item/ActiveEffect 合集"
+                + "（D-D3/N12 的目标就在 actor 内嵌物品那一层，只收 actions 会整批漏掉）",
     worldActors: worldActors.length,
     worldActorActions: worldActorUnits,
     worldItemActions: worldItemUnits,
@@ -493,6 +566,23 @@ globalThis.crucibleSweep = async function crucibleSweep({
     const d = R.dummy?.actor;
     return d ? new Map([mk(d)]) : new Map();
   };
+  /**
+   * BLOCKER 闸门 ① —— preActivate 会弹模态对话框的动作 id。
+   *
+   * `runS2` 直接调 `_callActionHooksAsync("preActivate")`，**跳过了上游 `#use()` 里的
+   * `_canUse()` 闸门**（crucible-compiled.mjs:19319-19323）。而这四个钩子会
+   * `await DialogV2.prompt(…)`：amplifyAffix(:8755) / delay(:9231) / fieldStudy(:9479) / imbueAffix(:9724)。
+   *
+   * 其中 `delay` 最要命：它是 `DEFAULT_ACTIONS`（:4807）的成员，
+   * `#prepareDefaultActions`（:42002）给**每一个** actor 无条件造一份 ——
+   * 合集里约 300 条，加上世界里每个 actor 各一条。
+   *
+   * ⚠ 跳过必须走「未覆盖」而不是 `return null`：调用点把 `null` 当成「S2 跑通了」，
+   * 会拿**没跑过 preActivate** 的形态去做 A-ID1 / A-K1 判定 —— 那是**假绿**，
+   * 比不跑更糟。所以这里只登记，实际分流在调用点做。
+   */
+  const MODAL_PREACTIVATE_IDS = new Set(["delay", "fieldStudy", "imbueAffix", "amplifyAffix"]);
+
   const runS2 = async (p, host) => {
     // 复刻 #initializeSelfEvents(:19747-19753)：preActivate 钩子会读 selfUpdateEvent / selfEvents
     safe(`S2seed:${p.id}`, () => {
@@ -1019,7 +1109,12 @@ globalThis.crucibleSweep = async function crucibleSweep({
     }
 
     /* ---- S2：跑 preActivate，取运行期写入的证据 ------------------------ */
-    if ( runPreActivate && R.preconditions.s2Usable ) {
+    // 闸门 ①：会弹模态对话框的四个 id 一律不跑 S2，落到下面的「未覆盖」分支去。
+    const s2Blocked = MODAL_PREACTIVATE_IDS.has(p.id);
+    if ( s2Blocked && runPreActivate && R.preconditions.s2Usable ) {
+      R.modalSkipped.push({ actionId: p.id, origin: u.origin });
+    }
+    if ( runPreActivate && R.preconditions.s2Usable && !s2Blocked ) {
       const err = await runS2(p, got.host);
       if ( err ) { stages.s2Failed++; R.errors.push(`S2:${p.id}: ${err}`); }
       else stages.s2++;
@@ -1036,7 +1131,8 @@ globalThis.crucibleSweep = async function crucibleSweep({
       }
     }
     else {
-      // 没有 S2：D1/D2/R1 仍然可以在 S1 上判（它们读的字段准备期就定了），
+      // 没有 S2（要么全局没开、要么被闸门① 拦下）：
+      // D1/D2/R1 仍然可以在 S1 上判（它们读的字段准备期就定了），
       // 但 ID1/K1 的 preActivate 那一档记为「未覆盖」而不是「通过」。
       for ( const [i, fx] of fxS1.entries() ) {
         const ctx = {...ctxBase, effectIndex: i, effectName: fx?.name ?? null};
@@ -1212,6 +1308,37 @@ globalThis.crucibleSweep = async function crucibleSweep({
     R.scanned.effectDocsScanned = scanned;
   });
 
+  /**
+   * ── D-D3  效果**文档**上的 duration.units ∈ {turns, months} ⇒ 这个效果永远建不出来
+   *    覆盖：**N12**（N10 的另一半：不由动作产出、`preActivate` 够不着的那批）
+   *    机制：与 A-D1 同一道拦截 —— `CrucibleActiveEffect._preCreate`(:39581-39584)
+   *          对这两个单位直接 `return false`。区别只在**这个效果从哪来**：
+   *          A-D1 读的是动作的 `effects[]`，这里读的是**物品文档自己的 `effects[]`**。
+   *          后者的创建路径（`transfer:true` 的持有即生效、GM 手动拖、宏里
+   *          `createEmbeddedDocuments`）一条都不经过动作。
+   *    ⚠ 已经**存在于世界里**的效果文档不会再走 `_preCreate` —— 能扫到它就说明它建成了
+   *      （多半是 crucible 加这道拦截之前建的）。所以真正的受害者是**尚未创建**的那批，
+   *      也就是合集里的模板。因此这里对 world 与 pack 两个来源分开标注严重度：
+   *      pack 来源 = major（拖上桌时必然失败），world 来源 = info（已经建成了，只是不该建成）。
+   */
+  if ( scanEffectDocs ) safe("D-D3", () => {
+    for ( const {effect, origin} of effectDocs ) {
+      const u = effect?.duration?.units;
+      if ( (u !== "turns") && (u !== "months") ) continue;
+      const fromWorld = String(origin).startsWith("world");
+      add("D-D3", fromWorld ? "info" : "major", {
+        kind: "EFFECT_DOC_DURATION_REJECTED", origin, effectName: effect.name,
+        observed: {units: u, value: effect?.duration?.value ?? null,
+                   transfer: effect?.transfer ?? null, parent: effect?.parent?.name ?? null},
+        detail: "效果**文档**（不是动作产出的效果）的 duration.units 是 " +
+                `"${u}"，而 CrucibleActiveEffect._preCreate(:39581) 对这两个单位直接 return false` +
+                (fromWorld ? " —— 本条已经在世界里，说明它是加这道拦截之前建的"
+                           : " ⇒ 从合集拖上桌时这个效果建不出来"),
+        covers: "N12",
+        player: u === "turns" ? "物品/天赋挂上了，该带的效果却一直没出现" : "同上"});
+    }
+  });
+
   /* ========================================================================= */
   /*  §R 报告                                                                  */
   /* ========================================================================= */
@@ -1229,7 +1356,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
     "thrown 的 `??= 10`（:4251）也只在此前没人填过时生效 ⇒ 换宿主结论可能变，看 finding 的 preparedAgainst。");
 
   R.coverage = {
-    "A-D1 EFFECT_DURATION_REJECTED": "N10（19 个动作 units:\"turns\" 的效果永不创建）",
+    "A-D1 EFFECT_DURATION_REJECTED": "N10（38 个动作 units:\"turns\" 的效果永不创建）",
     "A-D2 EFFECT_DURATION_DROPPED":  "N3（sentinelKick 踉跄永不过期）",
     "A-ID1 EFFECT_ID_INVALID":       "C1（swallow 17 字符，S1 档）/ N1（abyssMarkUnmaking 15 字符，S2 档）",
     "A-K1 EFFECT_TOPLEVEL_KEY":      "N2（ember 运行期往效果顶层写 changes）",
@@ -1239,11 +1366,13 @@ globalThis.crucibleSweep = async function crucibleSweep({
     "B-T2 REGION_SCOPE_NONE":        "（无对应已知条目，需人工裁决）",
     "B-T3 SINGLE_MIN_EXCLUDES_ADJACENT": "P2（suddenBite 贴身咬不到）",
     "B-I1 REGION_MINIMUM_INERT":     "（info，无对应已知条目）",
-    "B-W1 NATURAL_NO_STRIKES":       "I1（wildStrike 空 strikes 仍可用）",
+    "B-W1 NATURAL_NO_STRIKES":       "I1（wildStrike 空 strikes 仍可用）"
+                                     + (R.preconditions.w1Evaluable ? "" : " ⚠ 本次不可判：宿主自带天生武器"),
     "B-X1 NO_ROLL_PROVIDER":         "X1（缺 roll 提供者，伤害恒 0）",
     "C-ID2 HOOK_SOURCE_BAD_ID":      "C1 / N1 的源码级证据（补 postActivate 盲区，二等证据）",
     "C-E2 STALE_EFFECT_LOOKUP":      "E2（按猜出来的 id 查效果，启发式）",
-    "D-E1 CHANGE_KEY_NOT_LEAF":      "E1（ward 抗性 NaN）"
+    "D-E1 CHANGE_KEY_NOT_LEAF":      "E1（ward 抗性 NaN）",
+    "D-D3 EFFECT_DOC_DURATION_REJECTED": "N12（物品文档自带效果的 turns 时长，preActivate 够不着）"
   };
 
   const SEV_ORDER = ["blocker", "major", "warn", "suspect", "minor", "heuristic", "info", "MASKED"];
@@ -1254,15 +1383,19 @@ globalThis.crucibleSweep = async function crucibleSweep({
     byAssertion: Object.fromEntries(Object.entries(R.byAssertion).map(([k, v]) => [k, v.length])),
     coversHit: Array.from(new Set(R.findings.map(f => f.covers).filter(x => x && (x !== "(新)")))).sort(),
     writeAttempts: R.writeAttempts.length,
+    dialogAttempts: R.dialogAttempts.length,
+    modalSkipped: R.modalSkipped.length,
     errors: R.errors.length
   };
 
   return R;
 
   } finally {
-    // ⚠ 这两行比任何一条断言都重要：熔断留着不复原，这个世界在刷新之前完全无法写入。
-    restoreTempfix();
-    restoreFuse();
+    // ⚠ 这几行比任何一条断言都重要：熔断留着不复原，这个世界在刷新之前完全无法写入。
+    //   逐个 try —— 前一个还原抛错不能连累后面的。
+    try { restoreTempfix(); } catch (e) { console.error("还原 tempfix 失败", e); }
+    try { restoreDialog(); }  catch (e) { console.error("还原对话框熔断失败", e); }
+    try { restoreFuse(); }    catch (e) { console.error("还原写盘熔断失败", e); }
   }
 };
 
@@ -1349,47 +1482,40 @@ globalThis.crucibleSweepReport = async opts => globalThis.crucibleSweep(opts).th
 });
 
 /* ============================================================================
- * ⛔ 默认不自动跑 —— 有一条已知 BLOCKER 尚未修复
+ * BLOCKER 已修复（本轮）—— 记录当初是什么、两道闸怎么补的
  * ----------------------------------------------------------------------------
- * `runS2`（本文件 :485，钩子调用在 :496）直接 `await p._callActionHooksAsync("preActivate")`，
+ * 问题：`runS2` 直接 `await p._callActionHooksAsync("preActivate")`，
  * **跳过了上游 `#use()` 里的 `_canUse()` 闸门**（crucible-compiled.mjs:19319-19323）。
  * 而 crucible 有四个 preActivate 钩子会 `await DialogV2.prompt(…)`：
  *   amplifyAffix(:8755) / delay(:9231) / fieldStudy(:9479) / imbueAffix(:9724)
- *
  * `delay` 是 `DEFAULT_ACTIONS`（:4807）的成员，`#prepareDefaultActions`（:42002）
  * 给**每一个** actor 无条件造一份 —— 合集里约 300 条，加上世界里每个 actor 各一条。
+ * 后果里最糟的一条：写盘熔断在脚本卡在对话框期间一直遮着 `CONFIG.DatabaseBackend`，
+ * **世界在把几百个对话框点完或 F5 之前写不进任何东西。**
  *
- *  · 在战斗中跑：每个 actor 弹一次输入框，脚本 await 在那里不动，看起来像挂了。
- *  · 不在战斗中跑：`game.combat.combatant` 为 null，:9229 抛 TypeError，
- *    约 300 条同样的错误灌进 R.errors，把真错误淹掉。
- *  · **最糟的**：写盘熔断在 :302 装、:1254 的 finally 才拆。脚本卡在对话框上时，
- *    `CONFIG.DatabaseBackend` 的四个方法与 `game.settings.set` 一直被遮着 ——
- *    **你的世界在把几百个对话框点完或 F5 之前写不进任何东西**。
+ * 三处修复：
+ *  ① `MODAL_PREACTIVATE_IDS` 跳过表（§S2 上方）。调用点走「未覆盖」分支，
+ *     **不是** `return null` —— 后者会被记成「S2 跑通了」，然后拿没跑过 preActivate
+ *     的形态去做 A-ID1/A-K1 判定，那是假绿。被跳过的条目登记进 `R.modalSkipped`。
+ *  ② `installDialogFuse()` 遮 `DialogV2.wait/prompt/confirm/input`（§M）。
+ *     跳过表是按 id 列的白名单，防不住上游新增的弹框钩子；这道闸让漏网的调用
+ *     **立刻抛错并记进 `R.dialogAttempts`**，而不是无声 await 住。
+ *     还原走 `getOwnPropertyDescriptor` + `defineProperty` —— 这四个是 `DialogV2`
+ *     **类自身的 own static 属性**（foundry.mjs:37692 起），用 `delete` 还原会把
+ *     真实实现永久删掉，刷新前全世界的确认框都没了。
+ *  ③ `installWriteFuse()` / `installDialogFuse()` / `suspendTempfix()` 全部移进 `try`，
+ *     三个 restore 先初始化成空函数 —— 装载动作本身抛错时也保证 finally 拆得掉熔断。
  *
- * 修好它需要两道闸（缺一不可）：
- *  ① `runS2` 开头加 id 跳过表（delay / fieldStudy / imbueAffix / amplifyAffix）。
- *     **不能 `return null`** —— callsite :1012-1014 会把 null 记成「S2 跑通了」，
- *     然后拿没跑过 preActivate 的形态去做 A-ID1/A-K1 判定 = 假绿。要走 :1027 的「未覆盖」分支。
- *  ② 遮 `DialogV2.wait`（prompt/confirm/input 内部都转调它）。注意这四个是**类自身的
- *     own static 属性**（foundry.mjs:37692 起），还原必须用 `getOwnPropertyDescriptor`
- *     + `defineProperty`，用 `delete` 会把真实实现永久删掉。
+ * 跑法（仍建议先备份世界、且没有其他人在线 —— 它会对约 300 个动作跑准备与 preActivate）：
  *
- * 另：:302-303 的 `installWriteFuse()` / `suspendTempfix()` 在 `try`（:305）**之外**，
- * 中途抛错就没人拆熔断 —— 应初始化成空函数再进 try。
+ *     await crucibleSweep()
+ *     await crucibleSweep({ includePacks: true, runPreActivate: true, upstreamMode: true })
  *
- * 在这两道闸修好之前，**不要在有人在玩的世界里跑**。
- * 确实要跑（建议先备份世界、且没有其他人在线）：
- *
- *     await crucibleSweep({ iUnderstandTheBlocker: true })
+ * 跑完必看两个数：`R.summary.writeAttempts` 与 `R.summary.dialogAttempts`，
+ * **正常都应该是 0**。非 0 说明有代码试图写盘 / 弹框，被熔断挡下了 —— 那本身就是发现。
  * ========================================================================== */
-console.log("%c⛔ 遍历器已定义但未自动运行 —— 有一条未修复的 BLOCKER（见文件顶部 §0 上方的说明）。",
-  "color:#c33;font-weight:bold");
-console.log("%c   它会对约 300 个动作调 preActivate，其中 delay/fieldStudy/imbueAffix/amplifyAffix 会弹模态对话框，",
-  "color:#c33");
-console.log("%c   而写盘熔断在此期间一直遮着 DatabaseBackend —— 你的世界会写不进任何东西，直到对话框点完或 F5。",
-  "color:#c33");
-console.log("%c   确实要跑：await crucibleSweep({ iUnderstandTheBlocker: true })（建议先备份、且无人在线）",
-  "color:#888");
+console.log("%c遍历器已定义。跑：await crucibleSweep()", "color:#888");
+console.log("%c建议先备份世界、且无人在线 —— 它会对约 300 个动作跑 prepare 与 preActivate。", "color:#888");
 return run;
 
 })();
