@@ -363,6 +363,8 @@ class CrucibleBaseActorSheetStub {
       const n = natural[i];
       if ( n ) featuredEquipment.push({ name: n.name, type: n.type, uuid: n.uuid, img: n.img, tags: [] });
     }
+    const armor = this.document?.equipment?.armor;
+    if ( armor ) featuredEquipment.push({ name: armor.name, type: "armor", uuid: armor.uuid, img: "", tags: [] });
     return {
       featuredEquipment,
       biography: {
@@ -1001,7 +1003,8 @@ console.log("\nI 系列：上游还没修的开放 issue");
   const asViewer = new sheetCls({ isOwner: false });
   const [own, view] = await Promise.all([asOwner._prepareContext(), asViewer._prepareContext()]);
   check("I3 拥有者仍然看得到私记", own.biography.privateHTML === "<p>GM 私记</p>");
-  check("I3 非拥有者看不到私记原文", view.biography.privateHTML === "" && view.biography.privateSrc === "");
+  check("I3 非拥有者看不到私记原文", !("privateHTML" in view.biography) && !("privateSrc" in view.biography));
+  check("I3 privateField 是删掉而不是置 null（否则模板刷红字）", !("privateField" in view.biography));
   check("I3 公开传记不受影响", view.biography.publicHTML === "<p>公开</p>");
 }
 
@@ -1050,8 +1053,19 @@ console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 精选装备")
     equipment: { weapons: { natural: [claws(1), claws(2), claws(3)] } }
   });
   const ctx = await sheet._prepareContext();
-  check("B5 补齐到 3 件天生武器", ctx.featuredEquipment.length === 3, String(ctx.featuredEquipment.length));
-  check("B5 不重复已列出的", new Set(ctx.featuredEquipment.map(e => e.uuid)).size === 3);
+  const nat = ctx.featuredEquipment.filter(e => e.type === "weapon");
+  check("B5 补齐到 3 件天生武器", nat.length === 3, String(nat.length));
+  check("B5 不重复已列出的", new Set(ctx.featuredEquipment.map(e => e.uuid)).size === ctx.featuredEquipment.length);
+
+  // ⚠ 关键场景：护甲追加在末尾且占一格——拿 fe.length 比 3 会让所有有护甲的角色 100% 空转
+  const withArmor = new (crucible.api.applications.CrucibleBaseActorSheet)({
+    isOwner: true,
+    equipment: { armor: { name: "锁子甲", uuid: "armor1" }, weapons: { natural: [claws(1), claws(2), claws(3)] } }
+  });
+  const ctx2 = await withArmor._prepareContext();
+  const nat2 = ctx2.featuredEquipment.filter(e => e.type === "weapon");
+  check("B5 有护甲行时同样补齐（护甲不占武器预算）", nat2.length === 3, String(nat2.length));
+  check("B5 护甲仍在最后一格", ctx2.featuredEquipment.at(-1).type === "armor", ctx2.featuredEquipment.at(-1)?.type);
 }
 
 console.log("\n实测回归：强健体力（Vrjnhar 血裔）—— 用户在真实牌桌上报的第一条");

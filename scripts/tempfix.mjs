@@ -968,13 +968,17 @@ PROTOTYPE_PATCHES.push({
     const context = await orig.apply(this, args);
 
     // I3：非拥有者不该看到私密传记
+    // ⚠ 不要把 `privateField` 置为 null —— 模板拿它去渲染表单控件，null 会让非拥有者
+    //   每次渲染刷一条 console.error，并在传记页底部留一个没有标题的空折叠条。
+    //   控制台噪声本身就是我们要清掉的东西（它会污染「无未捕获异常」这条验收标准）。
+    //   正确做法是把这几个键**整个删掉**，模板取不到就不渲染那一段。
     if ( settingOn(setting) ) {
       const bio = context?.biography;
       if ( bio && !this.document?.isOwner ) {
-        bio.privateSrc = "";
-        bio.privateHTML = "";
-        bio.privateField = null;
-        bio.privateClass = "private-biography empty";
+        delete bio.privateField;
+        delete bio.privateSrc;
+        delete bio.privateHTML;
+        delete bio.privateClass;
       }
     }
 
@@ -982,16 +986,25 @@ PROTOTYPE_PATCHES.push({
     // 而每 push 一件上界就缩一格 —— 多爪多牙的怪物最多只列得出 1 件天生武器。
     // 纯显示层：动作列表里那些打击照常在，命中与伤害不受影响。
     // 这里在上游填完之后**补齐到 3 件**，顺序与上游一致（主手 → 副手 → 天生）。
+    // ⚠ 那个「3」是**武器**预算，而**护甲是追加在数组末尾的**（`:14782`）——
+    //   所以不能拿 `fe.length` 去比 3：护甲会占掉一格，导致所有有护甲行的角色 100% 空转。
+    //   要按「非护甲条目」计数，并把补的天生武器插在护甲**之前**。
     if ( settingOn("patchFeaturedEquipment") ) {
       const fe = context?.featuredEquipment;
-      const natural = this.document?.equipment?.weapons?.natural;
-      if ( Array.isArray(fe) && Array.isArray(natural) && (fe.length < 3) ) {
+      const equipment = this.document?.equipment;
+      const natural = equipment?.weapons?.natural;
+      if ( Array.isArray(fe) && Array.isArray(natural) ) {
+        const armorUuid = equipment?.armor?.uuid;
+        const armorAt = armorUuid ? fe.findIndex(e => e.uuid === armorUuid) : -1;
+        let weaponCount = fe.length - (armorAt >= 0 ? 1 : 0);
         const listed = new Set(fe.map(e => e.uuid));
+        let insertAt = (armorAt >= 0) ? armorAt : fe.length;
         for ( const n of natural ) {
-          if ( fe.length >= 3 ) break;
+          if ( weaponCount >= 3 ) break;
           if ( listed.has(n.uuid) ) continue;
           const tags = n.getTags?.("short") ?? {};
-          fe.push({ name: n.name, type: n.type, uuid: n.uuid, img: n.img, tags: [tags.damage, tags.range] });
+          fe.splice(insertAt, 0, { name: n.name, type: n.type, uuid: n.uuid, img: n.img, tags: [tags.damage, tags.range] });
+          insertAt++; weaponCount++;
         }
       }
     }
