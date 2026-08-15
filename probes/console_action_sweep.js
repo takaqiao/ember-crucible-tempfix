@@ -70,7 +70,7 @@
  *     决定（:4100-4105）；宿主空手时 `:4049 if(!strikes.length) return` 会让 maximum 停在 0。
  *     每条 finding 都带 `preparedAgainst`，换个宿主重跑结论可能变。
  *  4. **聊天卡宣称 vs 角色实况**（需要真发一次动作）、**babele 实际译条命中率**、
- *     **UI/窗口类缺陷**（I3 私密传记、I5 防御类型不显示、I6 夹击叠层）—— 全部不在动作层。
+ *     **UI/窗口类缺陷**（I3 私人传记、I5 防御类型不显示、I6 夹击叠层）—— 全部不在动作层。
  *  5. **I4（重复准备叠伤害）**只在「同一实例被 prepare 两次」时显形；本脚本每条动作只
  *     prepare 一次，故不覆盖（脚本内附了 `checkIdempotency` 自检，见 §P，默认关；
  *     `crucibleSweep({checkIdempotent:true})` 打开后对同一 probe 再 prepare 一遍并比对
@@ -658,7 +658,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
 
   /**
    * ── A-D2  duration 有 value 没 units ⇒ 整段被丢弃
-   *    覆盖：**N3**（sentinelKick 的踉跄永不消失，每回合 −2 行动点）
+   *    覆盖：**N3**（sentinelKick 的踉跄永不消失，每回合 −2 动作点）
    *    机制：`#recordEffectEvents` :19810
    *          `duration.units ? duration : (duration.expiry ? {expiry} : undefined)`
    *          ⇒ 无 units 时数值被丢；连 expiry 也没有则整段 undefined ⇒ 核心 AE schema
@@ -723,7 +723,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
   /**
    * ── A-K1  活对象上出现 schema 之外的效果顶层键 ⇒ 载荷被丢
    *    覆盖：**N2**（ember:125108 / :125151 把 changes 写在 effect 顶层，
-   *                 强化护盾 / 雷法姆变身的加值一条都不生效）
+   *                 强化护盾 / 泰拉菲克变形的加值一条都不生效）
    *    机制：schema 只有六个键(:18624-18633)；`#recordEffectEvents` 的解构(:19806)与
    *          重建(:19811-19818)也只认那几个 + `_id` / `showIcon`。顶层 `changes` 既不在
    *          schema 里、也不被解构 ⇒ 静默蒸发。
@@ -1015,7 +1015,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
     else if ( t.type === "single" ) {
       /**
        * ── B-T3  single + minimum > 0 ⇒ **贴身永远打不到**
-       *    覆盖：**P2**（凯思族撕咬，min=2 max=2，贴着敌人反而咬不到）
+       *    覆盖：**P2**（凯思血统的猝然撕咬，min=2 max=2，贴着敌人反而咬不到）
        *    机制：`getLinearRange`(:32122-32159) 量的是**基座到基座**，
        *          `ab.overlaps(tb)` 与贴边一律返回 **0**（:32129-32134）；
        *          :19692 `if (this.range.minimum && (range < this.range.minimum))` ⇒
@@ -1050,7 +1050,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
 
     /**
      * ── B-W1  带 natural 标签却一件天生武器都没有，动作照样可用
-     *    覆盖：**I1**（野性打击没有天生武器也能用，白刷行动点）
+     *    覆盖：**I1**（狂野打击没有天生武器也能用，白刷动作点）
      *    机制：`natural.canUse`(:4272-4276) 是
      *          `if (!this.usage.strikes.every(w => w.system.properties.has("natural"))) throw`
      *          —— `[].every(...)` 对空数组返 **true** ⇒ 空手时闸门放行；
@@ -1071,15 +1071,15 @@ globalThis.crucibleSweep = async function crucibleSweep({
           observed: {strikes: 0, canUse: true, displayOnSheet: true},
           detail: "带 natural 标签但准备后 usage.strikes 为空：natural.canUse(:4272) 的 " +
                   "`[].every(...)` 返回 true ⇒ 闸门放行；strike.prepare(:4049) 的 " +
-                  "`if(!strikes.length) return` ⇒ 一颗骰都不掷。动作可点、行动点照扣、什么都不发生",
+                  "`if(!strikes.length) return` ⇒ 一颗骰都不掷。动作可点、动作点照扣、什么都不发生",
           covers: "I1",
-          player: "点了扣行动点，什么都没打出来"});
+          player: "点了扣动作点，什么都没打出来"});
       }
     }
 
     /**
      * ── B-X1  声明了攻击意图，却没有任何 roll 提供者
-     *    覆盖：**X1**（脓疱迸裂 / 深渊残渣：描述承诺的伤害完全不会发生）
+     *    覆盖：**X1**（令人作呕的脓疱 / 深渊遗骸：描述承诺的伤害完全不会发生）
      *    判据（三重，缺一不可，全部读活对象）：
      *      ① `usage.hasDice === false`（准备后的真值 —— 直接置它的只有
      *         strike:4056 / hazard:4291 / generic:4317 / healing:4548 / rallying:4561 /
@@ -1209,7 +1209,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
 
   /**
    * ── C-E2  钩子里按「猜出来的 id」查效果，查询串与真实生成结果对不上
-   *    覆盖：**E2**（Wirrun 猎物加骰 / Vrjnhar 顽强体力从来没触发过）
+   *    覆盖：**E2**（威伦 Wirrun 猎物加骰 / 弗尔金哈尔 Vrjnhar 强健体力从来没触发过）
    *    机制：效果 id 由 `getEffectId(label, {suffix})`(:5358) = `generateId(label, 16-suffix.length)`
    *          (:48066，camelCase 后 slice/padEnd 到定长) 生成。钩子若手写一个「看起来像」的
    *          16 位串去 `effects.has(...)` 查，只要 generateId 的结果差一个字符就永远查不到。
