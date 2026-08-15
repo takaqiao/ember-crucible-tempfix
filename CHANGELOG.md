@@ -2,6 +2,45 @@
 
 本文件记录对玩家可见的行为变化。行号级的取证过程在 `docs/上游缺陷诊断.md`。
 
+## 0.7.3
+
+补丁逻辑一行未动。修 `diagnose()` 的一处漏报 —— 是用户贴自检输出对数时发现的。
+
+### 修复：`diagnose()` 少报了一条通用补丁
+
+`out.patches.universal` 一栏是**写死**的：
+
+```js
+out.patches.universal = UNIVERSAL_PATCHES.length ? ["turnsDuration"] : [];
+```
+
+写它的时候通用补丁只有 N10 一条。0.6.1 加了 I7（投掷武器下拉框）之后，
+`UNIVERSAL_DEFS` 变成两条，而自检**始终只报一条** ——
+I7 一直在正常工作，自检却说它不存在。
+
+现在从 `UNIVERSAL_DEFS` 反查 `label`，不再写死。每条通用补丁必须带 `label`，有断言盯着。
+
+这是本轮第三个同一形状的毛病：**写死的报告行，在新增条目后悄悄腐烂**
+（前两个是 0.7.2 修的 `flankingToggleWrapped` 只有 true/false、
+以及面板注册状态无从查看）。三处都不影响补丁本身，但都会让排障走错方向。
+
+### 顺带核对（这次的自检输出全部对得上）
+
+| 字段 | 报告值 | 与代码核对 |
+|---|---|---|
+| `prototypes` | 11 | `PROTOTYPE_PATCHES.push` 11 处 ✅ |
+| `hookOverrides` | 1 | `HOOK_OVERRIDES.push` 1 处 ✅ |
+| `cantripsCached` | 7 | `RUNE_CANTRIPS` 7 条 ✅ |
+| `affixTrainingFixed` | 12 | 12 个符文 Spellcraft 词缀 ✅ |
+| `settingsRegistered` | 31 | `bool()` 31 处 ✅ |
+| `universal` | ~~1~~ → 2 | `UNIVERSAL_DEFS` 2 条 ❌ **本版修** |
+
+### 测试
+
+303 → **307 条断言**；变异测试 45 → **47 处，47/47 全部被抓住**。
+
+---
+
 ## 0.7.2
 
 补丁逻辑一行未动。修一个**从没生效过**的补丁，加固一处排障盲区，重写全部设置提示。

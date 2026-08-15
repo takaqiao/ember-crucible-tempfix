@@ -111,8 +111,8 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | | |
 |---|---|
 | 补丁数 | **32** |
-| 离线断言 | **303 条**（`node tests/tempfix_harness.mjs`） |
-| 变异测试 | **45/45**（`node tests/mutate.mjs`，把补丁改回坏写法，验断言真的会红） |
+| 离线断言 | **307 条**（`node tests/tempfix_harness.mjs`） |
+| 变异测试 | **47/47**（`node tests/mutate.mjs`，把补丁改回坏写法，验断言真的会红） |
 | 真实牌桌验证 | **1 条** |
 
 **已被现实证实的**：N10 —— 实测「强健体力」用了没任何效果、1 专注 + 1 点英雄气概白扣，与诊断逐字吻合。

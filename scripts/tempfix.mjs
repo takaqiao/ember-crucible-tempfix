@@ -52,7 +52,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.7.2";
+const SCRIPT_VERSION = "0.7.3";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
@@ -1901,9 +1901,14 @@ const thrownChoicesPatch = {
   }
 };
 
+/**
+ * `label` 不是装饰 —— `diagnose()` 靠它报「哪几条通用补丁在跑」。
+ * 以前那里写死成 `["turnsDuration"]`，于是 I7 加进来之后**自检里根本看不到它**：
+ * 补丁在跑，自检却说只有一条。加补丁时必须同时给 label，有断言盯着。
+ */
 const UNIVERSAL_DEFS = [
-  { setting: "patchTurnsDuration", body: turnsDurationPatch },
-  { setting: "patchThrowableOnly", body: thrownChoicesPatch }
+  { setting: "patchTurnsDuration", label: "turnsDuration", body: turnsDurationPatch },
+  { setting: "patchThrowableOnly", label: "thrownChoices", body: thrownChoicesPatch }
 ];
 
 /**
@@ -2531,7 +2536,9 @@ Hooks.once("ready", async () => {
       out.patches.testsWrapped = !!A?.prototype?._tests?.__tempfixPatched;
       out.patches.actorHooksWrapped = !!CONFIG.Actor.documentClass.prototype.callActorHooks.__tempfixPatched;
       out.patches.active = Object.keys(ACTION_PATCHES);
-      out.patches.universal = UNIVERSAL_PATCHES.length ? ["turnsDuration"] : [];
+      // 从 UNIVERSAL_DEFS 反查名字，不写死 —— 写死的那版在 I7 加进来后就开始漏报了
+      out.patches.universal = UNIVERSAL_PATCHES.map(body =>
+        UNIVERSAL_DEFS.find(d => d.body === body)?.label ?? "(未命名)");
       out.patches.hookOverrides = HOOK_OVERRIDES.map(o => {
         const fn = globalThis.crucible?.api?.hooks?.[o.type]?.[o.id]?.[o.hook];
         return `${o.type}.${o.id}.${o.hook}=${fn?.__tempfixOverride ? "已覆盖" : "未覆盖"}`;
