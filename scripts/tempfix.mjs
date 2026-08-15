@@ -37,8 +37,34 @@
  */
 
 const MODULE_ID = "ember-crucible-tempfix";
+
+/**
+ * **本文件自己的版本号**，必须与 `module.json` 的 `version` 手动保持一致。
+ *
+ * 看着冗余，其实是**唯一**能发现「浏览器在跑缓存的旧脚本」的办法：
+ * Foundry 给模块 ESM 的 URL 不带版本参数，浏览器会一直用缓存；
+ * 而 `module.json` 是服务端读的、永远是新的。于是
+ * **模块列表显示 0.7.1、实际执行的却是 0.2.0** —— 两者对不上而没有任何提示。
+ *
+ * 这个坑烧掉过两轮排查：用户报「设置只有十几条、看不到控制面板」，
+ * 三个信号（`diagnose()` 少了 `universal` 键、`active` 恰好 11 条、行号 908）
+ * 才把真凶指到 0.2.0 的缓存脚本上。现在版本一对不上就直接喊出来。
+ *
+ * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
+ */
+const SCRIPT_VERSION = "0.7.2";
+
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
+
+/**
+ * 比对「清单版本」与「本脚本版本」。不一致 ⇒ 浏览器在跑缓存的旧脚本。
+ * @returns {{manifest: string, script: string, stale: boolean}}
+ */
+function versionCheck() {
+  const manifest = globalThis.game?.modules?.get?.(MODULE_ID)?.version ?? null;
+  return { manifest, script: SCRIPT_VERSION, stale: !!manifest && (manifest !== SCRIPT_VERSION) };
+}
 
 /** @returns {{EITHER:number, MAINHAND:number, OFFHAND:number, TWOHAND:number}} */
 const slots = () => globalThis.SYSTEM?.WEAPON?.SLOTS ?? { EITHER: 0, MAINHAND: 1, OFFHAND: 2, TWOHAND: 3 };
@@ -1360,33 +1386,83 @@ PROTOTYPE_PATCHES.push({
  * 修法：关闭时清**全部** token 而不只是选中的。这条不走 `PROTOTYPE_PATCHES` ——
  * 工具对象是在 `getSceneControlButtons` 钩子里现造的，包原型没用，得在同一个钩子里改它。
  */
-function installFlankingToggleFix() {
-  Hooks.on("getSceneControlButtons", controls => {
-    let on = true;
-    try { on = game.settings.get(MODULE_ID, "patchFlankingToggle"); } catch { /* 尚未注册 */ }
-    if ( !on ) return;
-    const tool = controls?.tokens?.tools?.debugFlanking;
-    const orig = tool?.onChange;
-    if ( !(orig instanceof Function) || orig.__tempfixPatched ) return;
-    // 闸门：上游那句「只遍历 controlled」还在吗
-    if ( !String(orig).includes("canvas.tokens.controlled") ) return;
+/** 闸门没匹配上时只警告一次，别每次重渲染都刷屏 */
+let _flankingGuardWarned = false;
 
-    const patched = (event, active) => {
-      const r = orig(event, active);
-      if ( !active ) {
-        // 上游只清了 controlled，把剩下的孤儿一并清掉
-        for ( const token of globalThis.canvas?.tokens?.placeables ?? [] ) {
-          try { token._clearEngagementVisualization?.(); } catch { /* 忽略单个 token 的失败 */ }
-        }
+/**
+ * 把 `debugFlanking` 工具的 `onChange` 包一层：关闭叠层时清理**全部** token，
+ * 不只是 `canvas.tokens.controlled`（上游只清后者，换选之后旧图形就成了孤儿）。
+ *
+ * @param {object} controls  `getSceneControlButtons` 给的控件表，或 `ui.controls.controls`
+ * @returns {"已包装"|"已经包装过"|"没找到工具"|"闸门未匹配"|"开关关闭"}
+ */
+function wrapFlankingTool(controls) {
+  let on = true;
+  try { on = game.settings.get(MODULE_ID, "patchFlankingToggle"); } catch { /* 尚未注册 */ }
+  if ( !on ) return "开关关闭";
+  const tool = controls?.tokens?.tools?.debugFlanking;
+  const orig = tool?.onChange;
+  if ( !(orig instanceof Function) ) return "没找到工具";
+  if ( orig.__tempfixPatched ) return "已经包装过";
+  // 闸门：上游那句「只遍历 controlled」还在吗
+  if ( !String(orig).includes("canvas.tokens.controlled") ) {
+    // ⚠ 以前这里是静默 return —— 上游一改实现，I6 就无声退休，
+    //   而 diagnose 只显示一个 false，看不出是「退让了」还是「没装上」。
+    if ( !_flankingGuardWarned ) {
+      _flankingGuardWarned = true;
+      warn("I6：上游已改写 debugFlanking 的实现，本补丁自动退让（这是正常的自我退休）");
+    }
+    return "闸门未匹配";
+  }
+
+  const patched = (event, active) => {
+    const r = orig(event, active);
+    if ( !active ) {
+      // 上游只清了 controlled，把剩下的孤儿一并清掉
+      for ( const token of globalThis.canvas?.tokens?.placeables ?? [] ) {
+        try { token._clearEngagementVisualization?.(); } catch { /* 忽略单个 token 的失败 */ }
       }
-      return r;
-    };
-    patched.__tempfixPatched = true;
-    patched.__tempfixOriginal = orig;
-    tool.onChange = patched;
-  });
+    }
+    return r;
+  };
+  patched.__tempfixPatched = true;
+  patched.__tempfixOriginal = orig;
+  tool.onChange = patched;
+  return "已包装";
+}
+
+/**
+ * I6 的安装。**必须在 `setup` 就调**，否则赶不上控件的首次渲染。
+ *
+ * 时序（Foundry `Game#setupGame`）：
+ *   `Hooks.callAll("setup")`   foundry.mjs:205819   ← 钩子必须在这之前/这一刻注册好
+ *   `this.initializeUI()`      foundry.mjs:205843
+ *     └ `ui.controls.render()` foundry.mjs:206127   ← 控件首次渲染，
+ *                                                     crucible 的顶层钩子在此创建 debugFlanking
+ *   `Hooks.callAll("ready")`                        ← 只在这里装就**晚了一步**
+ *
+ * 这正是 0.7.1 之前的实际情况：`installFlankingToggleFix()` 只在 ready 里调，
+ * 于是首次进世界 I6 根本没生效，要等玩家切一次控件图层、控件重渲染才补上。
+ * 用户贴出的 `diagnose()` 里 `flankingToggleWrapped: false` 就是这么来的。
+ *
+ * 两道保险：
+ *  ① 注册 `getSceneControlButtons` 钩子 —— 管以后每一次重渲染；
+ *  ② 若控件**已经**渲染过，就地把现成的那个工具包住 —— 管「装晚了」的情况。
+ *     这一条能立刻生效，因为 `#onChangeTool`（foundry.mjs:146118）是
+ *     **点击时**才 `this.control.tools[...]` 查表，不是渲染时绑定的。
+ */
+function installFlankingToggleFix() {
+  if ( !_flankingHookInstalled ) {
+    _flankingHookInstalled = true;
+    Hooks.on("getSceneControlButtons", controls => wrapFlankingTool(controls));
+  }
+  // 已经渲染过就当场补包一次（重复调用是安全的：orig.__tempfixPatched 会挡住）
+  try { wrapFlankingTool(globalThis.ui?.controls?.controls); } catch { /* 控件还没建，钩子会兜住 */ }
   return true;
 }
+
+/** `Hooks.on` 只注册一次 —— setup 与 ready 都会调 installFlankingToggleFix() */
+let _flankingHookInstalled = false;
 
 /* -------------------------------------------- */
 /*  D 系列：描述与数据的伤害类型不一致               */
@@ -2201,75 +2277,75 @@ Hooks.once("init", () => {
 
   // ── ① 影响最大 —— 效果根本没被创建 ──────────────────────────────────────────
   bool("patchTurnsDuration", "① N10 + N12 修正被系统拒绝创建的效果时长（影响面最大）",
-    "<strong>38 个动作</strong>的效果时长写的是旧的 <code>turns</code> 单位，而系统在创建效果时会直接拒绝这个单位——<strong>聊天卡写着「获得效果」，角色身上却什么都没有</strong>。<strong>九个血统的招牌变身全部中招</strong>（泰拉菲克变形/结晶化创伤/极限代谢/活石/规整节律/刺棘树皮/强健体力/无情猎手/泽夫的三种面容），此外还波及 crucible <strong>自己的</strong>内容 7 个（吞噬思维/精神鞭笞/邪异流溢/凶暴嚎叫/疫病鞭笞/盾牌猛击/蒸汽喷口），以及 ember 的一批消耗品（炼金手雷/霜滴小瓶/电荷安瓿/三枚宇宙宝石）。开启后把单位换成「轮」，数值不变。<br>同一开关还管 <strong>N12</strong>：另有 22 个效果直接写在物品文档上（例如神话尖塔守护者 Mythspire Guardian 的「濒临死亡 Nearing Death」，持有即应生效却永远建不出来），它们的创建不经过动作，要在效果创建那一层才拦得到。<br>注意这是解释而非还原：上游没有 turns 这个单位，原作者想要多久无从考证。");
+    "聊天卡写着「获得效果」，人身上却什么都没有，九个血统的招牌变身全中招；物品自带的常驻效果也一样。开启后都能挂上。时长是推定值，非上游权威。");
   bool("patchEffectChanges", "① N2 修正「强化护盾」/「泰拉菲克变形」丢失的加值",
-    "这两个动作把 changes 写在了效果数据的顶层，而系统只从 effect.system 下读。<strong>本项依赖上面的 N10</strong>——它们的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。（威吓 +2 恩惠骰那一条系统层面表达不了，仍未生效。）");
+    "「强化护盾」「泰拉菲克变形」的加值一点都不加。开启后生效，需同时开启 N10。（威吓 +2 恩惠骰仍无法实现。）");
   bool("patchEffectIdAlignment", "① E2 让「无情猎手」与「强健体力」真正触发",
-    "ember 这两处按猜出来的 id 查效果，而系统生成的是另一个——查询永远落空：<strong>朝猎物的攻击一次 +2 恩惠骰都不会出现</strong>，「强健体力」的动作点退还从头到尾一次都不触发。两条都是血统的招牌能力。开启后把写入端的效果 ID 对齐到它要找的那个。<strong>本项依赖 N10</strong>——这两个动作的效果同时还因时长单位非法而根本不会被创建，两个开关都开着才有意义。");
+    "朝猎物攻击的 +2 恩惠骰不出现，「强健体力」的动作点退还从不触发。开启后正常，需同时开启 N10。");
 
   // ── ② 动作放不出去 / 点了什么都不发生 ─────────────────────────────────────────
   bool("patchAbyssMark", "② N1 修正深渊「湮解印记」的非法效果 ID",
-    "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
+    "用了什么都不发生：不出聊天卡、不扣资源。开启后能正常施放，旧的印记也清得掉。");
   bool("patchSwallowEffectId", "② C1 修正「吞下」的非法效果 ID（crucible 自身缺陷）",
-    "crucible 给 Swallow 硬编码的效果 id 有 17 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣，配套的「反吐」也永远找不到要删的效果。开启后换成合法的 16 位 ID。");
+    "用了什么都不发生：不出聊天卡、不扣资源，配套的「反吐」也解不掉。开启后能正常吞下。");
   bool("patchDarkflameCirclet", "② N7 修正「暗焰光束」的非法标签",
-    "用了只对法术动作合法的 composed 标签，导致使用时崩在生成聊天卡之前——资源不扣、卡也不出。开启后移除该标签。");
+    "用了什么都不发生：不出聊天卡、不扣资源。开启后能正常发射。");
   bool("patchSparkScope", "② N4 修正「余烬之火花」的目标作用域",
-    "作用域写成了「敌人」，但它的复活分支是针对友方尸体的，导致那半边永远选不中目标、使用按钮置灰。开启后放宽为「全部」，由动作自己的条件把关。");
+    "复活分支选不中友方尸体，使用按钮灰着点不动。开启后作用域放宽为「全部」，目标列表会变长，由动作自身条件把关。");
   bool("patchAntigravityStone", "② N6 修正「反重力石」的目标类型",
-    "纯自身效果却写成「单体目标且不可选自己」，必须拿别人凑数才能用，选自己反而会把规划好的位移路径丢掉。开启后改为自身目标。");
+    "明明是自身效果，却必须选别人才能用，选自己会丢掉规划好的位移路径。开启后可直接对自己使用。");
   bool("patchTumbleScope", "② C4 修正「穿越翻滚」的目标阵营（crucible 自身缺陷）",
-    "目标阵营写成了「盟友」，而描述两次点名敌人。后果是选中敌人时提示阵营不合法、动作放不出来，只有选队友才能用。开启后改为敌人。<br>改的是天赋「穿越翻滚 Tumble Through」下的那个动作——它在动作列表里显示为<strong>「翻滚 tumble」</strong>，验收时找这个名字。");
+    "选敌人会提示阵营不合法、动作放不出去，只能选队友。开启后可对敌人使用。动作在列表里显示为「翻滚 tumble」。");
   bool("patchDawnBeaconScope", "② C5 修正「曙光信标」的目标阵营（crucible 自身缺陷）",
-    "这是个 60 尺的 pulse 区域，作用域却写成了「自身」，导致区域取目标时一个都取不到——光柱画出来了，聊天卡上零目标零骰子。开启后改为敌人。");
+    "光柱画出来了，聊天卡上却零目标零骰子。开启后区域内的敌人能被打到。");
 
   // ── ③ 能用，但结算错了 ──────────────────────────────────────────────────
   bool("patchOffhandStrike", "③ P1 修正副手攻击的前置判据",
-    "系统用武器的<strong>存盘</strong> slot 判断上一击是不是主手，而对「任一手」武器来说手位只存在于派生值里；徒手更是从头到尾没被赋过手位。开启后改用角色身上那件武器当前的实际手位判断，并给徒手/临时武器补上手位。");
+    "双持匕首或赤手空拳时，先打了主手也用不出副手攻击，只提示要跟在主手攻击之后。开启后能正常接上。");
   bool("patchSuddenBite", "③ P2 修正凯思血统「猝然撕咬」的攻击范围",
-    "ember 把 range 写成 min=max=2，而 minimum 量的是贴边距离（相邻＝0），等于把「贴着咬」排除掉了。开启后改为 min=空 / max=1，与同类近身单体动作一致。");
+    "贴着敌人反而咬不到，得隔开一段距离才选得中目标。开启后相邻即可撕咬。");
   bool("patchRestorativeRedirection", "③ P4 修正「疗愈导流」恢复的资源种类",
-    "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
+    "上一次法术打的是士气，恢复的却仍是生命值。开启后按那一击实际打的资源恢复，下面的下拉框也才生效。不加掷骰——无骰恢复是原设计。");
   bool("patchStaggerDuration", "③ N3 修正「斥退踢击」的踉跄变永久",
-    "duration 有 value 却没有 units，被系统整段丢弃，踉跄因此永不过期——中招的角色每回合永久少 2 点动作点。开启后补上 units=rounds。");
+    "中招的角色踉跄永不消失，此后每回合都少 2 点动作点。开启后按回合正常过期。");
   bool("patchBewilderingGaze", "③ N5 给「惑乱凝视」补上意志防御标签",
-    "缺 willpower 标签，导致这个精神攻击按护甲结算（还会被「用盾牌挡下」）。开启后补上标签，与同类动作一致。");
+    "精神攻击却按护甲结算，还会被「用盾牌挡下」抵掉。开启后改按意志防御结算。");
   bool("patchMissingRollProvider", "③ X1 给两条区域伤害动作补上掷骰实现",
-    "「令人作呕的脓疱」与「深渊遗骸」都带防御与伤害类型标签，唯独缺少任何提供掷骰实现的标签，导致描述里承诺的伤害完全不会发生。已逐条确认这两个动作在 crucible 与 ember 的钩子注册表里都没有任何代码侧自动化；两侧 packs 全部 409 条动作扫过一遍，这类动作只有它们俩（另一条是作者自己标注「待平衡」的半成品，本模块不碰）。开启后补上通用掷骰标签。<strong>补的是实现而不是数值</strong>——防御、伤害类型、属性加值、−6 减值全部读自动作自己的标签，本模块不发明任何数字；「深渊遗骸」数据里没有任何属性缩放标签，所以它打出来偏弱，这是原数据如此。");
+    "「令人作呕的脓疱」「深渊遗骸」描述里写了伤害，实际一点都不掷。开启后正常出伤害，数值全读原数据（后者没有属性加成，本就偏弱）。");
   bool("patchDamageTypes", "③ D 系列 修正描述与数据不符的伤害类型",
-    "三条动作的伤害类型与自己的描述矛盾：「剧毒喷雾」结算成电击（上游已在开发版改成毒），「自毁」的烈焰爆炸结算成穿刺，「吞噬思维」的灵能伤害落回天生武器的钝击。后果是抗性算错——吃火抗的角色挡不住火焰爆炸，吃钝击抗性的重甲反而能挡下纯精神攻击。开启后按描述修正。注意<strong>「吞噬思维」来自 playtest（试玩）合集</strong>，不是正式内容包，若你的世界没导入过它这一条自然不会触发。");
+    "剧毒喷雾算电击、自毁的烈焰算穿刺、吞噬思维的灵能算钝击，都与描述矛盾，抗性因此算错。开启后按描述修正。吞噬思维来自 playtest 合集。");
   bool("patchResistanceChangeKey", "③ E1 修正「稳定守护」把酸性抗性算成 NaN",
-    "该效果的加值写在了抗性对象本身而不是它的 bonus 字段上，导致派生出来的酸性抗性变成 NaN，此后每次酸性伤害结算都带着 NaN 传播。开启后自动补上正确的字段路径。");
+    "吃到这个效果后酸性抗性变成 NaN，之后每次酸性伤害都算不出正确结果。开启后抗性正常。");
   bool("patchWildStrike", "③ I1 堵住「狂野打击」的动作点漏洞（上游 issue #1403）",
-    "没有天生武器的角色也能用「狂野打击」——判据用 every() 检查空数组，真空通过。动作显示可用、生成聊天卡，但一次骰都不掷、一点伤害都不出，<strong>反而把动作点退还回来</strong>，等于无本万利的动作点发生器。开启后没有天生武器时正常拦住。");
+    "没有天生武器的角色也能用「狂野打击」：不掷骰不出伤害，动作点还退回来，等于白刷动作点。开启后正常拦住。");
   bool("patchRepeatedPrepare", "③ I4 修正位移动作重复准备导致的加成叠加（上游 issue #1404）",
-    "位移类动作在规划路径后会第二次准备，而系统只重置了消耗、没重置加成——带「强化」标签的动作（如飞踢）伤害会<strong>比条目描述多 6 点</strong>；路径被判非法需要重新规划时会变成多 18 点。开启后每次准备前把加成恢复成原始态。");
+    "带「强化」标签的位移动作（如飞踢）伤害比条目描述多 6 点，重新规划路径后还会更多。开启后按描述结算。");
   bool("patchAffixTraining", "③ N11 修正符文词缀不设训练阶位",
-    "crucible 自己的 bug：12 个符文 Spellcraft 词缀的钩子把训练阶位写到了 actor <em>文档</em>上，而那里没有这个字段，于是抛异常被吞掉——<strong>符文知识拿到了，训练阶位没设上</strong>，施放该符文的法术按「未受训 −4」结算，控制台每次数据准备刷一条错误。开启后改写到数据模型上。");
+    "符文知识拿到了，训练阶位却没设上，施放该符文的法术按「未受训 −4」结算。开启后正常设上。");
   bool("patchRuneCantrips", "③ P3 补上符文所授的戏法与训练阶位",
-    "带 rune 的天赋（ember 四血统、以及召唤合集里九条旧快照）都没带该符文的招牌戏法；旧快照还连训练阶位一起丢了，导致本命符文法术按「未受训 −4」结算。开启后在运行时补齐。");
+    "选了符文却拿不到它的招牌戏法；召唤合集里的旧快照还会让本命符文法术按「未受训 −4」结算。开启后运行时补齐。");
   bool("patchHasKnowledge", "③ I2 让手工添加的知识真正生效（上游 issue #1412）",
-    "系统判断「角色有没有某项知识」时只读背景给的那一份，GM 手工加的知识一律当作不存在——用「评估力量」「洞悉弱点」时本该拿到的 +2 恩惠骰不会出现。开启后改读角色的知识聚合值。");
+    "GM 手工加的知识不算数：用「评估力量」「洞悉弱点」时该拿到的 +2 恩惠骰不出现。开启后正常计入。");
   bool("patchThrowableOnly", "③ I7 投掷武器的下拉框只列扔得出去的武器（上游 issue #1288）",
-    "「投掷武器」的选择框把徒手、天生武器这些<strong>扔不出去</strong>的也列了出来，选中再用就报错。上游每个需求标签都会在准备阶段把用不了的武器标成不可选（近战标签排除远程武器、远程标签排除近战武器、天生标签同理），唯独「投掷」标签漏了这一步。开启后按上游自己的写法补上。<br>上游 issue 还提到「选了非法的那个之后这个动作从此点不动、要重启会话才恢复」——非法选项从可选列表里消失后，系统锁定所选武器的那一步会找不到它、自动落回正常挑选，因此下一次准备就会脱困。<strong>但那半个症状本模块没有复现过</strong>，若卡死另有来源则不保证解决。");
+    "下拉框把徒手、天生武器这些扔不出去的也列出来，选中再用就报错。开启后只列扔得出去的。上游提到的「动作从此点不动」没复现过，不保证一并解决。");
 
   // ── ④ 回搬自上游开发版（上游发 0.10.2 后自动停用） ────────────────────────────────
   bool("patchEnchantmentBonus", "④ B1/B2 回搬：词缀推导的附魔加值不生效（上游 bea623d8）",
-    "附魔加值在数据准备的<strong>太早</strong>阶段就被算死，而词缀要到派生阶段才解析完——给武器加词缀后攻击掷骰里没有附魔加值、给护甲加词缀后闪避防御不涨，手动把附魔等级改成同一档反而就好了。上游已在开发版修好（尚未发布），本项把它回搬。");
+    "武器加了词缀，攻击掷骰里却不见附魔加值；护甲加了词缀，闪避防御也不涨。开启后加完立刻生效。");
   bool("patchCurrencyPopout", "④ B3 回搬：角色卡弹成独立窗口后货币归零（上游 1659465a）",
-    "货币元素在首次构建时把自己的 value 属性删掉了，元素被搬进弹窗重新连接时只能读回 0。改动一次货币又会自己好。上游已在开发版修好（尚未发布），本项把它回搬。");
+    "把角色卡弹成独立窗口后，货币全显示成 0，改动一次数额才恢复。开启后弹窗里直接显示正确数额。");
   bool("patchSkillDialogSwap", "④ B4 回搬：掷骰对话框里换了技能却没生效（上游 798a8638）",
-    "多技能团队检定时，玩家在对话框里换成另一项技能，系统掷的仍然是默认那一项——对话框的返回值被丢掉了。上游已在开发版修好（尚未发布），本项把它回搬。单技能检定不受影响。");
+    "多技能团队检定里换成另一项技能，掷的仍是默认那项。开启后按选中的技能掷。单技能检定不受影响。");
   bool("patchFeaturedEquipment", "④ B5 修好侧栏「当前装备」只列得出 1 件天生武器（上游 ac1b5cfc）",
-    "天生武器的循环上界写成「3 减去已列数量」，而每加一件上界就缩一格，导致多爪多牙的怪物最多只列出 1 件。纯显示层：动作列表里那些打击照常在，命中与伤害不受影响。上游已在开发版修好（尚未发布）。");
+    "多爪多牙的怪物，侧栏「当前装备」只列得出 1 件天生武器。纯显示问题，动作列表里的打击照常能用。开启后全部列出。");
 
   // ── ⑤ 显示与界面 ─────────────────────────────────────────────────────
   bool("patchPrivateBiography", "⑤ I3 修补私人传记的泄漏（上游 issue #1406）",
-    "<strong>这是信息泄漏</strong>：角色卡把「私人传记」无条件渲染给所有能打开卡的人，权限设成 limited/observer 的玩家照样能原文读到 GM 私记。提示语写着「仅拥有者可见」，实现却没兑现。开启后非拥有者看不到该字段。");
+    "信息泄漏：权限只有受限或观察者的玩家，也能原文读到 GM 写的「私人传记」。开启后对非拥有者隐藏。");
   bool("patchDefenseTypeLabel", "⑤ I5 让玩家也看得到攻击打的是哪条防御（上游 issue #1402）",
-    "攻击聊天卡上的目标栏，GM 端显示「反射 12」而玩家端只有「DC」——防御类型本来是公开信息（条目描述里就写着），该藏的只有数值。开启后玩家端补上类型，<strong>仍然不显示 DC 数字</strong>。");
+    "攻击卡的目标栏，GM 看得到「反射 12」，玩家只有一个「DC」。防御类型本是公开信息，该藏的只有数值。开启后玩家也看得到类型，数值仍不显示。");
   bool("patchFlankingToggle", "⑤ I6 修好「可视化夹击」叠层关不掉（上游 issue #1311）",
-    "关闭该调试叠层时系统只清理当前选中的 token，换选之后旧图形就钉死在画布上，再点开关也清不掉，只能刷新页面。开启后关闭时清理全部 token。仅 GM 可见。");
+    "关掉「可视化夹击」后，之前选过的 token 上还钉着图形，怎么点开关都清不掉，只能刷新页面。开启后一次全清。仅 GM 可见。");
 
   game.settings.register(MODULE_ID, "redirectResource", {
     name: "P4 疗愈导流恢复哪种资源",
@@ -2342,6 +2418,10 @@ Hooks.once("setup", () => {
   installPrototypePatches();
   // ember 在 init 注册钩子，而 #prepareHooks 在角色数据准备时才快照 —— setup 正好夹在中间
   installHookOverrides();
+  // ⚠ I6 必须在这里装：场景控件的首次渲染发生在 setup 之后、ready 之前
+  //   （foundry.mjs:205843 的 initializeUI → :206127 的 ui.controls.render）。
+  //   只在 ready 装的话，首次进世界 I6 根本不生效 —— 0.7.1 之前就是这个 bug。
+  installFlankingToggleFix();
   registerToolboxMenu();       // init 时若 ApplicationV2 还没就位，这里补一次
 });
 
@@ -2355,10 +2435,23 @@ Hooks.once("ready", async () => {
   // 「在跑哪一版、init 有没有一路跑到底」。此前没有任何地方能一眼看出来，
   // 于是排查从一开始就走错了方向。现在这一行把三件事一次说清。
   const menuOk = toolboxMenuRegistered();
-  log(`v${game.modules.get(MODULE_ID)?.version ?? "?"} 已就绪`
+  const ver = versionCheck();
+  log(`v${ver.script} 已就绪`
     + ` —— 补丁开关 ${REGISTERED_SETTINGS.size} 项`
     + `，控制面板 ${menuOk ? "已注册" : "**未注册**"}`
     + `（系统 ${game.system?.version ?? "?"} / Ember ${globalThis.ember?.version ?? "未安装"}）`);
+
+  // 缓存的旧脚本 —— 这一条必须比什么都响：在它成立的前提下，
+  // 「面板不见了」「设置少了一截」这类现象全都是假象，排查它们纯属浪费时间。
+  if ( ver.stale ) {
+    const msg = `⚠ 你的浏览器在跑**缓存的旧脚本**：模块清单是 v${ver.manifest}，`
+      + `实际执行的却是 v${ver.script}。请 Ctrl+Shift+R 强制刷新（或清一次缓存）。`
+      + `在此之前，模块的行为是 v${ver.script} 的行为，与更新日志对不上。`;
+    console.error(`%c${MODULE_ID} | ${msg}`, "color:#c33;font-weight:bold;font-size:13px");
+    globalThis.ui?.notifications?.error?.(`${MODULE_ID}：浏览器在跑缓存的旧脚本 `
+      + `(v${ver.script} ≠ 清单 v${ver.manifest})，请 Ctrl+Shift+R 强制刷新。`, { permanent: true });
+  }
+
   if ( !menuOk ) warn("控制面板没能注册上。请把控制台里本模块的红色报错发给作者；"
     + "补丁本身不受影响，命令表仍可用：emberCrucibleTempFix.help()");
 
@@ -2387,6 +2480,8 @@ Hooks.once("ready", async () => {
     COMMANDS,
     SETTING_CATALOG,
     SETTING_GROUPS,
+    SCRIPT_VERSION,
+    versionCheck,
     /** 面板 HTML 生成器；离线测试用它验「每个开关/命令都真的渲染出来了」 */
     __renderToolbox: renderToolbox,
     /** 面板类工厂；离线测试用它验「类建得起来、菜单注册得上」 */
@@ -2408,6 +2503,8 @@ Hooks.once("ready", async () => {
     installAffixTrainingFix,
     installPrototypePatches,
     installFlankingToggleFix,
+    /** 单个工具表的包装（测试用：验「装晚了也能补上」与各种退让分支） */
+    __wrapFlankingTool: wrapFlankingTool,
     PROTOTYPE_PATCHES,
     /** 让 N10 的上游 guard 重新检测一次（测试用；正常运行时缓存一次即可） */
     resetTurnsGuard() { _rejectsTurns = null; },
@@ -2418,7 +2515,11 @@ Hooks.once("ready", async () => {
       // （模块目录是指向源码的目录联接，磁盘最新不代表浏览器加载的是最新。）
       const out = {
         module: MODULE_ID,
+        // scriptVersion 是**这段代码自己**的版本，version 是清单里写的。
+        // 两者不一致 = 浏览器在跑缓存的旧脚本，此时下面所有字段说的都是旧版本的事。
         version: game.modules.get(MODULE_ID)?.version ?? "?",
+        scriptVersion: SCRIPT_VERSION,
+        staleScript: versionCheck().stale,
         system: game.system?.version ?? "?",
         ember: globalThis.ember?.version ?? "(未安装)",
         settingsRegistered: REGISTERED_SETTINGS.size,
@@ -2463,9 +2564,15 @@ Hooks.once("ready", async () => {
             .filter(c => c?.prepareGrimoire?.__tempfixOverride).length;
         } catch { o.affixTrainingFixed = "解析失败"; }
         try {
+          // 分状态报告：以前这里只给 true/false，`false` 同时代表
+          // 「上游改了实现自动退让」和「装晚了没赶上首次渲染」—— 两件事完全不同，
+          // 而后者是 0.7.1 之前的真 bug（用户贴 diagnose 才发现）。
           const t = ui.controls?.controls?.tokens?.tools?.debugFlanking?.onChange;
-          o.flankingToggleWrapped = t ? !!t.__tempfixPatched : "工具未注册";
-        } catch { o.flankingToggleWrapped = "解析失败"; }
+          if ( !t ) o.flankingToggle = "工具未注册（场景控件还没渲染？）";
+          else if ( t.__tempfixPatched ) o.flankingToggle = "已包装";
+          else if ( !String(t).includes("canvas.tokens.controlled") ) o.flankingToggle = "上游已改写实现，自动退让";
+          else o.flankingToggle = "未包装（安装晚于控件首次渲染，切一次控件图层即可）";
+        } catch { o.flankingToggle = "解析失败"; }
         return o;
       })();
       out.patches.cantripsCached = Object.keys(CANTRIP_SOURCES);

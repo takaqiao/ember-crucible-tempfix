@@ -12,6 +12,11 @@
 
 const MODULE = new URL("../scripts/tempfix.mjs", import.meta.url).href;
 
+/** 真的 module.json 里的版本 —— 桩件与断言都用它，避免写死后随发版腐烂 */
+const MANIFEST_VERSION = JSON.parse(
+  (await import("node:fs")).readFileSync(
+    new URL("../module.json", import.meta.url), "utf8")).version;
+
 /* ---------- 最小 Foundry 桩件 ---------- */
 
 const hookRegistry = {};
@@ -42,7 +47,10 @@ const registeredMenus = [];
 globalThis.game = {
   ready: false,
   version: "14.0.0",
-  modules: { get: id => ({ id, version: "0.6.1", active: true }) },
+  // ⚠ 版本**从真的 module.json 读**，不要写死。写死会随发版腐烂，
+  //   而它恰恰是「缓存旧脚本」检测机制的对照物 —— 桩件一旦跟清单对不上，
+  //   那条检测就会在离线测试里假红/假绿，机制本身反而没人守。
+  modules: { get: id => ({ id, version: MANIFEST_VERSION, active: true }) },
   system: { id: "crucible", version: "0.10.1" },
   i18n: { format: (k, d) => `${k}:${JSON.stringify(d)}` },
   settings: {
@@ -1645,6 +1653,109 @@ console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍
   setSetting("ember-crucible-tempfix.patchSuddenBite", true);
 }
 
+console.log("\nI6 夹击叠层：安装时机与退让分支");
+{
+  const T = globalThis.emberCrucibleTempFix;
+  // 复刻上游 debugFlanking.onChange（crucible-compiled.mjs:47965）——
+  // 特征串 "canvas.tokens.controlled" 必须真的出现在源码里，闸门读的就是它
+  const makeUpstream = () => (_event, active) => {
+    CONFIG.debug = CONFIG.debug ?? {};
+    CONFIG.debug.flanking = active;
+    for ( const token of globalThis.canvas.tokens.controlled ) {
+      if ( active ) token._visualizeEngagement(token.engagement);
+      else token._clearEngagementVisualization();
+    }
+  };
+  const mkControls = fn => ({ tokens: { tools: { debugFlanking: { onChange: fn } } } });
+
+  const c1 = mkControls(makeUpstream());
+  check("正常情况 → 包装上", T.__wrapFlankingTool(c1) === "已包装");
+  check("幂等：再来一次不重复包", T.__wrapFlankingTool(c1) === "已经包装过");
+  check("留了原实现的引用", typeof c1.tokens.tools.debugFlanking.onChange.__tempfixOriginal === "function");
+
+  // 关掉叠层时必须清理**全部** token，不只是 controlled —— I6 的实质
+  const cleared = [];
+  const mkToken = id => ({ id, engagement: {}, _visualizeEngagement() {}, _clearEngagementVisualization() { cleared.push(id); } });
+  const a = mkToken("选中的"), b = mkToken("没选中的");
+  globalThis.canvas.tokens.controlled = [a];
+  globalThis.canvas.tokens.placeables = [a, b];
+  cleared.length = 0;
+  c1.tokens.tools.debugFlanking.onChange({}, false);
+  check("关闭时连没选中的 token 也清理了（孤儿图形）",
+    cleared.includes("没选中的"), cleared.join(","));
+  // 打开时不许乱清
+  cleared.length = 0;
+  c1.tokens.tools.debugFlanking.onChange({}, true);
+  check("开启时不做清理", cleared.length === 0, cleared.join(","));
+  globalThis.canvas.tokens.controlled = [];
+  globalThis.canvas.tokens.placeables = [];
+
+  // 上游改写实现 → 自动退让，而且**说出来**（以前是静默 return）
+  const c2 = mkControls(function onChange() { /* 上游重写了，没有那句遍历 */ });
+  const warnsBefore = warnCount;
+  check("上游改写实现 → 闸门未匹配、自动退让", T.__wrapFlankingTool(c2) === "闸门未匹配");
+  check("退让时原实现一字未动", !c2.tokens.tools.debugFlanking.onChange.__tempfixPatched);
+  // ⚠ 「静默退让」正是本轮暴露的病根：I6 失效了却一句话都没有。
+  //   所以退让必须**留声**，且只留一次（重渲染很频繁，刷屏同样是病）。
+  check("退让时打了一条警告（不许静默）", warnCount > warnsBefore, `${warnsBefore} → ${warnCount}`);
+  const warnsAfterFirst = warnCount;
+  T.__wrapFlankingTool(mkControls(function onChange() { /* 同样改写过 */ }));
+  check("退让的警告只打一次，不刷屏", warnCount === warnsAfterFirst, `${warnsAfterFirst} → ${warnCount}`);
+
+  // 工具不在（控件还没渲染）
+  check("控件还没渲染 → 报「没找到工具」", T.__wrapFlankingTool({}) === "没找到工具");
+  check("controls 为 undefined 也不抛", T.__wrapFlankingTool(undefined) === "没找到工具");
+
+  // 关掉开关 → 不包
+  setSetting("ember-crucible-tempfix.patchFlankingToggle", false);
+  const c3 = mkControls(makeUpstream());
+  check("关掉开关 → 不包装", T.__wrapFlankingTool(c3) === "开关关闭");
+  setSetting("ember-crucible-tempfix.patchFlankingToggle", true);
+
+  /**
+   * ⚠ 这条是本次真 bug 的直接判据：
+   * 场景控件的首次渲染在 setup 之后、ready 之前（foundry.mjs:205843 → :206127），
+   * 所以只在 ready 装就赶不上 —— 首次进世界 I6 完全不生效。
+   * 现在 install 会**就地把已经渲染好的那个工具补包住**。
+   */
+  globalThis.ui.controls = { controls: mkControls(makeUpstream()) };
+  T.installFlankingToggleFix();
+  check("控件已渲染后才安装 → 就地补包住（不必等重渲染）",
+    !!globalThis.ui.controls.controls.tokens.tools.debugFlanking.onChange.__tempfixPatched);
+  delete globalThis.ui.controls;
+}
+
+console.log("\n版本一致性（缓存旧脚本的检测机制）");
+{
+  const T = globalThis.emberCrucibleTempFix;
+  const manifest = { version: MANIFEST_VERSION };
+
+  /**
+   * ⚠ 这条断言是整个机制的命根子。SCRIPT_VERSION 靠人手同步，一旦忘了改，
+   * 「缓存检测」就会**永远误报**（清单新、脚本常量旧），比没有还糟 ——
+   * 用户会被一条假警告指着去清缓存。所以让它在离线测试里就红。
+   */
+  check("SCRIPT_VERSION 与 module.json 的 version 一致（发版时两处都要改）",
+    T.SCRIPT_VERSION === manifest.version, `脚本 ${T.SCRIPT_VERSION} / 清单 ${manifest.version}`);
+
+  // 一致 → 不报过期
+  check("版本一致 → stale 为 false", T.versionCheck().stale === false);
+  check("versionCheck 报出两边的版本",
+    T.versionCheck().script === T.SCRIPT_VERSION && !!T.versionCheck().manifest);
+
+  // 清单更新而脚本没更新（真实场景：浏览器缓存了旧 .mjs）→ 必须报过期
+  const realGet = game.modules.get;
+  game.modules.get = () => ({ id: "ember-crucible-tempfix", version: "99.0.0" });
+  check("清单比脚本新 → 判定为缓存旧脚本", T.versionCheck().stale === true);
+  check("过期时把两边版本都带出来", T.versionCheck().manifest === "99.0.0"
+    && T.versionCheck().script === T.SCRIPT_VERSION);
+
+  // 读不到清单（模块未注册 / API 变了）→ 不许误报成过期
+  game.modules.get = () => undefined;
+  check("读不到清单 → 不误报过期（保守）", T.versionCheck().stale === false);
+  game.modules.get = realGet;
+}
+
 console.log("\n控制面板与命令表");
 {
   const T = globalThis.emberCrucibleTempFix;
@@ -1837,6 +1948,21 @@ console.log("\n开关");
   {
     const d = globalThis.emberCrucibleTempFix.diagnose();
     check("diagnose 带上了模块版本", !!d.version && d.version !== "?", String(d.version));
+    check("diagnose 带上了脚本自身版本", !!d.scriptVersion, String(d.scriptVersion));
+    check("diagnose 报出脚本是否过期", d.staleScript === false, String(d.staleScript));
+    // ⚠ 上面那条在版本一致时恒为 false，写死 `staleScript: false` 也能骗过去
+    //   （变异测试抓到过）。所以必须在**不一致**的条件下再验一次。
+    {
+      const realGet = game.modules.get;
+      game.modules.get = () => ({ id: "ember-crucible-tempfix", version: "99.0.0" });
+      const d2 = globalThis.emberCrucibleTempFix.diagnose();
+      check("清单与脚本不一致时 diagnose 必须报 staleScript=true",
+        d2.staleScript === true, String(d2.staleScript));
+      check("此时 diagnose 的 version 与 scriptVersion 确实不同",
+        d2.version === "99.0.0" && d2.scriptVersion !== "99.0.0",
+        `${d2.version} / ${d2.scriptVersion}`);
+      game.modules.get = realGet;
+    }
     check("diagnose 带上了系统版本", !!d.system, String(d.system));
     check("diagnose 报出开关数", d.settingsRegistered === 31, String(d.settingsRegistered));
     check("diagnose 报出面板注册状态", d.panelRegistered === true, String(d.panelRegistered));

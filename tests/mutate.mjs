@@ -38,6 +38,22 @@ const MUTATIONS = [
   ["settingOn 失败方向反了", "  try { on = game.settings.get(MODULE_ID, key); } catch { /* 未注册 → 保守生效 */ }",
                    "  try { on = game.settings.get(MODULE_ID, key); } catch { on = false; }"],
 
+  // ── I6 的安装时机（用户贴 diagnose 才发现：首次进世界压根没生效）
+  ["I6 不再就地补包已渲染的控件", "  try { wrapFlankingTool(globalThis.ui?.controls?.controls); } catch { /* 控件还没建，钩子会兜住 */ }", "  "],
+  ["I6 闸门失败改回静默", '      warn("I6：上游已改写 debugFlanking 的实现，本补丁自动退让（这是正常的自我退休）");', "      "],
+  ["I6 闸门恒通过（上游改了也硬包）", '  if ( !String(orig).includes("canvas.tokens.controlled") ) {', "  if ( false ) {"],
+  ["I6 只清 controlled（复现上游 bug）", "      for ( const token of globalThis.canvas?.tokens?.placeables ?? [] ) {",
+                   "      for ( const token of globalThis.canvas?.tokens?.controlled ?? [] ) {"],
+  ["I6 开启时也乱清一遍", "    if ( !active ) {\n      // 上游只清了 controlled", "    if ( true ) {\n      // 上游只清了 controlled"],
+
+  // ── 缓存旧脚本的检测（用户 VPS 上「清单 0.7.0、实际跑 0.2.0」逼出来的）
+  ["SCRIPT_VERSION 与清单脱节（忘了同步）", 'const SCRIPT_VERSION = "0.7.2";', 'const SCRIPT_VERSION = "0.0.1";'],
+  ["stale 判据反了", "stale: !!manifest && (manifest !== SCRIPT_VERSION)",
+                   "stale: !!manifest && (manifest === SCRIPT_VERSION)"],
+  ["读不到清单时误报过期", "stale: !!manifest && (manifest !== SCRIPT_VERSION)",
+                   "stale: (manifest !== SCRIPT_VERSION)"],
+  ["diagnose 不再报 staleScript", "        staleScript: versionCheck().stale,", "        staleScript: false,"],
+
   // ── 控制面板注册的**失败路径**（用户在 VPS 上报「看不到控制面板」逼出来的）
   ["面板类抛异常时不再兜住（会带走 init）",
                    "  try { Toolbox = getToolboxClass(); }", "  { Toolbox = getToolboxClass(); }"],

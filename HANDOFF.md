@@ -60,8 +60,8 @@ C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── docs\补丁详解.md            ← 每条补丁的根因与做法（原先在 README 里，0.7.0 拆出来）
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 与 §7 撤回记录、§6 已排除清单
 ├── tests\
-│   ├── tempfix_harness.mjs    ← 离线断言 257 条（不需要 Foundry）
-│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（28/28）
+│   ├── tempfix_harness.mjs    ← 离线断言 303 条（不需要 Foundry）
+│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（45/45）
 └── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
     ├── dump_all.mjs / dump_pack.mjs / dump_actions.mjs / index_actions.mjs / find_field.mjs
     │                           ← LevelDB 合集离线导出与检索（node；需要仓库根的 classic-level）
@@ -84,8 +84,8 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**257 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**257 passed / 0 failed**。
+**303 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**303 passed / 0 failed**。
 
 断言本身也验过 —— 变异测试把补丁逐个改回坏写法，期望 harness **变红**：
 
@@ -93,12 +93,28 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 ```
 
-当前 **28 处变异，28/28 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
+当前 **45 处变异，45/45 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
 加补丁时**同时加一条变异**：一条永远绿的断言和没有断言是一回事 ——
 这个脚本抓出过多条假绿，最近一条是「`settingOn` 读不到设置时保守生效」从来没被断言过。
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。
 > 桩件复刻的是「读出来的语义」。真实世界验证没有替代品。
+
+### 排障第一步：先确认在跑哪一版
+
+模块目录常是指向源码的**目录联接**，而 Foundry 给模块 ESM 的 URL **不带版本参数** ——
+清单（服务端读）永远是新的，浏览器执行的脚本却可能是旧缓存。
+这个坑连烧两轮：一次是本地目录被当成证据（实为 0.2.0），
+一次是用户报「设置只有十几条、没有控制面板」，真因就是缓存的 0.2.0 脚本。
+
+0.7.2 起脚本自带 `SCRIPT_VERSION`，与清单不符会红字报错 + 常驻通知。
+就绪时也会打一行：
+
+```
+ember-crucible-tempfix | v0.7.2 已就绪 —— 补丁开关 31 项，控制面板 已注册（系统 0.10.1 / Ember 0.6.0）
+```
+
+**对不上就 Ctrl+Shift+R**，在此之前任何症状都不必排查。
 
 ### 真实世界（**尚未做，这是最高优先级的未完项**）
 
@@ -156,6 +172,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 | `patchEnchantmentBonus` | B1/B2 | 给武器加词缀看攻击骰；给护甲加词缀看闪避 | 攻击骰里出现附魔加值；闪避防御涨 |
 | `patchCurrencyPopout` | B3 | 角色卡弹成独立窗口 | 货币不为 0 |
 | `patchFlankingToggle` | I6 | 开夹击叠层 → 换选别的 token → 关叠层 | 旧图形也消失，不用刷新 |
+| `patchFlankingToggle` | I6′ | **刚进世界、一次控件图层都没切过**就直接测上一行 | 同样生效（0.7.2 之前这里是坏的：安装晚于控件首次渲染）；`diagnose().patches.others.flankingToggle` 为「已包装」 |
 | `patchFeaturedEquipment` | B5 | 打开多爪多牙怪物的卡，看侧栏当前装备 | 列出 3 件天生武器 |
 | `patchThrowableOnly` | **I7** | 装一把匕首（可投掷）+ 有天生武器的角色，打开「投掷武器」的武器下拉框 | 只列得出匕首；徒手/天生武器不再出现 |
 | `patchThrowableOnly` | I7′ | 先在**关掉**本项时选中一个扔不出去的武器并使用（复现卡死），再开回来 | 下一次准备自动落回能扔的那把，动作恢复可用 |
