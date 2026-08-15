@@ -96,7 +96,8 @@ globalThis._del = Symbol("delete");
 
 const SLOTS = { EITHER: 0, MAINHAND: 1, OFFHAND: 2, TWOHAND: 3 };
 const TARGET_SCOPES = { NONE: 0, SELF: 1, ALLIES: 2, ENEMIES: 3, ALL: 4 };
-globalThis.SYSTEM = { WEAPON: { SLOTS }, ACTION: { TARGET_SCOPES } };
+globalThis.SYSTEM = { WEAPON: { SLOTS }, ACTION: { TARGET_SCOPES },
+  DAMAGE_TYPES: { acid: {id: "acid"}, corruption: {id: "corruption"}, fire: {id: "fire"} } };
 
 /**
  * `CrucibleActionTags`：真实实现（:18426）对**未注册**的标签会 console.warn 并静默拒绝。
@@ -138,7 +139,9 @@ const TAGS = {
   fire: { tag: "fire", initialize() { this.usage.damageType ??= "fire"; } },
   psychic: { tag: "psychic", initialize() { this.usage.damageType ??= "psychic"; } },
   natural: { tag: "natural", prepare() { this.usage.damageType ??= "bludgeoning"; } },
-  melee: { tag: "melee" }
+  melee: { tag: "melee" },
+  // :4432 —— 累加写法，这就是 #1404 会叠加的根源
+  empowered: { tag: "empowered", prepare() { this.usage.bonuses.damageBonus += 6; } }
 };
 
 /**
@@ -200,7 +203,9 @@ class CrucibleAction {
     this.range = { ...(src.range ?? {}) };
     this.target = { type: "single", scope: TARGET_SCOPES.ALL, self: false, ...(src.target ?? {}) };
     this.tags = new TagSet(src.tags ?? []);
-    this.usage = { hasDice: false, restoration: false, resource: null, defenseType: null, bonuses: { ability: 0, damageBonus: 0 } };
+    // :19107 的 Reset bonuses 块共六个字段
+    this.usage = { hasDice: false, restoration: false, resource: null, defenseType: null,
+      bonuses: { ability: 0, skill: 0, enchantment: 0, damageBonus: 0, multiplier: 1, criticalSuccessThreshold: 0 } };
     this.effects = foundry.utils.deepClone(src.effects ?? []);
     for (const e of this.effects) if (e.duration) migrateDuration(e.duration);   // :21573
     this.hooks = HOOKS_ACTION[src.id] ?? Object.freeze({});   // :19023
@@ -220,7 +225,13 @@ class CrucibleAction {
     }
   }
   // 真实顺序：initialize(:20302) → prepare(:20320) → canUse(:20429) → preActivate(:20504)
-  prepare() { this._call("initialize"); this._call("prepare"); }
+  _configureUsage() {
+    this.usage.hasDice = false;
+    // :20286 原文——注意它只重置 cost，bonuses 一个都不碰
+    // Reset cost fields to their source values so that repeated prepare() calls do not accumulate costs
+  }
+  /** :19162 */
+  prepare() { this._configureUsage(); this._call("initialize"); this._call("prepare"); }
   canUse() { this._call("canUse"); }
   preActivate() { this._call("preActivate"); }
 }
@@ -302,6 +313,7 @@ class CrucibleActor {
  * 来判断上游是否仍然拒绝 turns。所以这里必须是一个源码里真的含 "turns" 字面量的函数。
  */
 class CrucibleActiveEffect {
+  prepareBaseData() {}
   _preCreate() {
     if ( ["months", "turns"].includes(this.duration.units) ) return false;
   }
@@ -965,6 +977,47 @@ console.log("\nI 系列：上游还没修的开放 issue");
   check("I3 拥有者仍然看得到私记", own.biography.privateHTML === "<p>GM 私记</p>");
   check("I3 非拥有者看不到私记原文", view.biography.privateHTML === "" && view.biography.privateSrc === "");
   check("I3 公开传记不受影响", view.biography.publicHTML === "<p>公开</p>");
+}
+
+console.log("\nI4 / E1：重复准备的加成叠加、抗性 change 少了 .bonus");
+{
+  const actor = new CrucibleActor("I4");
+
+  // I4：empowered 是 `damageBonus += 6`（:4432），而 _configureUsage 只重置 cost
+  const kick = new CrucibleAction({ id: "flyingKick", tags: ["empowered"], target: { type: "movement" } }, { actor });
+  kick.prepare();
+  check("I4 第一次准备 → +6", kick.usage.bonuses.damageBonus === 6, String(kick.usage.bonuses.damageBonus));
+  kick.prepare();
+  check("I4 位移规划后的第二次准备 → 仍是 +6（不叠加）", kick.usage.bonuses.damageBonus === 6, String(kick.usage.bonuses.damageBonus));
+  kick.prepare();
+  check("I4 路径非法重规划的第三次 → 仍是 +6", kick.usage.bonuses.damageBonus === 6, String(kick.usage.bonuses.damageBonus));
+  check("I4 multiplier 恢复成 1 而不是 0", kick.usage.bonuses.multiplier === 1, String(kick.usage.bonuses.multiplier));
+
+  setSetting("ember-crucible-tempfix.patchRepeatedPrepare", false);
+  const kick2 = new CrucibleAction({ id: "flyingKick", tags: ["empowered"], target: { type: "movement" } }, { actor });
+  kick2.prepare(); kick2.prepare();
+  check("I4 关掉开关 → 回到上游原行为（叠加成 +12）", kick2.usage.bonuses.damageBonus === 12, String(kick2.usage.bonuses.damageBonus));
+  setSetting("ember-crucible-tempfix.patchRepeatedPrepare", true);
+
+  // E1：system.resistances.acid 是 SchemaField，change 少了 .bonus
+  const eff = new CrucibleActiveEffect();
+  eff.system = { changes: [
+    { key: "system.resistances.acid", type: "add", value: 5 },
+    { key: "system.resistances.corruption.bonus", type: "add", value: 3 },   // 本来就对
+    { key: "system.resistances.notARealType", type: "add", value: 1 },       // 不认识 → 不碰
+    { key: "system.defenses.armor.bonus", type: "add", value: 2 }            // 与抗性无关
+  ] };
+  eff.prepareBaseData();
+  const keys = eff.system.changes.map(c => c.key);
+  check("E1 补上了 .bonus", keys[0] === "system.resistances.acid.bonus", keys[0]);
+  check("E1 本来就对的不动", keys[1] === "system.resistances.corruption.bonus");
+  check("E1 不认识的伤害类型 → 不猜", keys[2] === "system.resistances.notARealType");
+  check("E1 与抗性无关的不动", keys[3] === "system.defenses.armor.bonus");
+
+  const eff2 = new CrucibleActiveEffect();
+  eff2.system = { changes: [{ key: "system.resistances.acid.bonus", type: "add", value: 5 }] };
+  eff2.prepareBaseData();
+  check("E1 幂等：ember 修好后不再改", eff2.system.changes[0].key === "system.resistances.acid.bonus");
 }
 
 console.log("\nB4：掷骰对话框里换了技能却没生效");
