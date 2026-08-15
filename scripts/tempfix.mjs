@@ -718,6 +718,178 @@ function applySwallowEffectId(enabled) {
 }
 
 /* -------------------------------------------- */
+/*  B 系列：从上游开发版回搬的修复                   */
+/* -------------------------------------------- */
+
+/**
+ * 「回搬」与前面所有补丁方向相反：上游 `master` 已经修好、但**还没发布**的 bug，
+ * 我们先搬给还在 0.10.1 的人用。（0.10.2 至今未发。）
+ *
+ * ⚠ **不照抄上游代码。** crucible 的 LICENSE 明写
+ * 「No permission is granted at this time to modify, publish, distribute, sell,
+ * or otherwise use the software or its data in any other way.」
+ * 所以这里全部用**包装**实现——读上游 diff 弄懂它修了什么，然后用自己的代码达到同样效果。
+ * 需要整段照抄才能修的（如 `798a8638` 的 `rollSkill`）**一律不做**，记在 README 里。
+ *
+ * 每条都必须先回答「0.10.1 到底有没有这个 bug」——上游有些 commit 修的是
+ * 未发布代码自己引入的回归，那种搬过来是无中生有。已按此筛掉 `33bc14ff`
+ * （它修的是 `6b5551d6` 引入的回归，0.10.1 编译产物里 `ownedRef` 零命中）。
+ *
+ * @type {Array<{label: string, resolve: Function, method: string,
+ *   guard?: {method: string, includes: string}, setting: string, wrap: Function}>}
+ */
+const PROTOTYPE_PATCHES = [];
+
+/**
+ * 包装任意类的原型方法。与 `HOOK_OVERRIDES` 的区别：那个换的是钩子注册表里的条目，
+ * 这个换的是类原型上的方法（数据模型、自定义元素、角色卡都靠它）。
+ *
+ * `guard` 检的是**上游实现的源码特征串**——上游一改就跳过，不带着过期假设跑。
+ * 开关是在**包装体内部**实时读的，所以关掉开关立刻回到原实现，不需要卸载。
+ * @returns {boolean}
+ */
+function installPrototypePatches() {
+  for ( const p of PROTOTYPE_PATCHES ) {
+    let target = null;
+    try { target = p.resolve(); } catch { /* 结构变了 */ }
+    const proto = target?.prototype;
+    const orig = proto?.[p.method];
+    if ( !(orig instanceof Function) ) { warn(`跳过 ${p.label}：找不到 ${p.method}`); continue; }
+    if ( orig.__tempfixPatched ) continue;
+
+    if ( p.guard ) {
+      // ⚠ 必须读**原始**实现的源码。同一个类可能有多条补丁，若 guard 指向的方法
+      //   已经被我们前面那条包过，`String(fn)` 读到的是包装体，特征串必然找不到 ——
+      //   于是后面的补丁被自己人挡在门外。（这个坑是变异测试之外由 B2 实测抓出来的。）
+      const guardFn = proto[p.guard.method];
+      const src = String(guardFn?.__tempfixOriginal ?? guardFn ?? "");
+      if ( !src.includes(p.guard.includes) ) {
+        warn(`跳过 ${p.label}：上游实现已变，自动退让`);
+        continue;
+      }
+    }
+    const patched = p.wrap(orig, p.setting);
+    patched.__tempfixPatched = true;
+    patched.__tempfixOriginal = orig;
+    proto[p.method] = patched;
+    log(`已包装 ${p.label}`);
+  }
+  return true;
+}
+
+/** 包装体内部实时读开关（关掉即刻回到上游原行为） */
+const settingOn = key => {
+  try { return game.settings.get(MODULE_ID, key); } catch { return false; }
+};
+
+/**
+ * B1 + B2（上游 `bea623d8`，修 issue #1378 与 #1396）：
+ * **词缀推导出来的附魔等级完全不生效。**
+ *
+ * 根因是**算得太早**。0.10.1 在 `prepareBaseData` 里就把附魔加值算死：
+ *  - 武器 `:45092` `this.actionBonuses = {ability: 0, skill: -4, enchantment: enchantment.bonus};`
+ *  - 护甲 `:44225` `this.dodge.base = category.dodge.base(this.armor.base) + enchantment.bonus;`
+ *
+ * 而**词缀**要到派生阶段才解析完，所以 base 阶段读到的 `config.enchantment` 是词缀生效**之前**的值。
+ * 上游的修法就是把这两处挪进 `prepareDerivedData`。
+ *
+ * 玩家看到的：给武器加词缀后，物品卡上附魔等级显示正确，但拿它攻击时**掷骰里没有附魔加值**；
+ * 手动把附魔等级改成同一档就有了。护甲那面是闪避防御不涨。
+ *
+ * 我们的做法（不照抄，用包装达到同效果）：
+ *  - 武器：派生阶段结束后把 `actionBonuses.enchantment` **覆写**成此刻的真值（幂等）。
+ *  - 护甲：base 阶段先记下它用了哪个值，派生阶段结束后按**差额**修正 `dodge.base`
+ *    （不能直接覆写——base 里那一项和 `category.dodge.base(armor.base)` 加在了一起）。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleWeaponItem#prepareDerivedData（B1 附魔加值）",
+  setting: "patchEnchantmentBonus",
+  resolve: () => CONFIG.Item?.dataModels?.weapon,
+  method: "prepareDerivedData",
+  guard: { method: "prepareBaseData", includes: "enchantment: enchantment.bonus" },
+  wrap: (orig, setting) => function prepareDerivedData(...args) {
+    const r = orig.apply(this, args);
+    if ( settingOn(setting) && this.actionBonuses ) {
+      const fresh = this.config?.enchantment?.bonus;
+      if ( Number.isFinite(fresh) ) this.actionBonuses.enchantment = fresh;
+    }
+    return r;
+  }
+});
+
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleArmorItem#prepareBaseData（B2 记录 base 用的附魔值）",
+  setting: "patchEnchantmentBonus",
+  resolve: () => CONFIG.Item?.dataModels?.armor,
+  method: "prepareBaseData",
+  guard: { method: "prepareBaseData", includes: "category.dodge.base(this.armor.base) + enchantment.bonus" },
+  wrap: (orig, setting) => function prepareBaseData(...args) {
+    const r = orig.apply(this, args);
+    if ( settingOn(setting) ) {
+      this.__tempfixBaseEnchantment = this.config?.enchantment?.bonus ?? 0;
+      this.__tempfixDodgeFixed = false;   // 新的一轮准备，差额还没补
+    }
+    return r;
+  }
+});
+
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleArmorItem#prepareDerivedData（B2 按差额修正闪避）",
+  setting: "patchEnchantmentBonus",
+  resolve: () => CONFIG.Item?.dataModels?.armor,
+  method: "prepareDerivedData",
+  guard: { method: "prepareBaseData", includes: "category.dodge.base(this.armor.base) + enchantment.bonus" },
+  wrap: (orig, setting) => function prepareDerivedData(...args) {
+    const r = orig.apply(this, args);
+    if ( settingOn(setting) && this.dodge ) {
+      const fresh = this.config?.enchantment?.bonus;
+      const stale = this.__tempfixBaseEnchantment;
+      // 幂等：真实流程里 base 每轮都会重算 dodge.base，但万一 derived 被单独调用两次，
+      // 差额不能加两遍。base 那一侧负责把标记清掉。
+      if ( !this.__tempfixDodgeFixed && Number.isFinite(fresh) && Number.isFinite(stale) && (fresh !== stale) ) {
+        this.dodge.base += (fresh - stale);
+        this.__tempfixDodgeFixed = true;
+      }
+    }
+    return r;
+  }
+});
+
+/**
+ * B3（上游 `1659465a`，修 issue #1379）：**把角色卡弹成独立窗口后货币归零。**
+ *
+ * `HTMLCrucibleCurrencyElement._buildElements()`（`:7523-7527`）开头两行是
+ * `this._value = Number(this.getAttribute("value") || 0);` 紧接着 `this.removeAttribute("value")`。
+ * 属性一被删掉，元素被搬进另一个 document（弹窗）重新连接时就只能读回 **0**。
+ * 报告人补充「一旦货币被改动就自己好了」——因为重渲染会走 `create()` 重新写上属性。
+ *
+ * 上游的修法是把 `removeAttribute` 换成 `setAttribute`，并在改值后同步属性。
+ * 我们不动原方法，改为：原方法跑完之后把属性写回去；再挂一个 `change` 监听器保持同步
+ * （改值那段在私有方法 `#onChangeInput` 里，包不到，但它会 `dispatchEvent` 一个冒泡的 change）。
+ */
+PROTOTYPE_PATCHES.push({
+  label: "HTMLCrucibleCurrencyElement#_buildElements（B3 弹窗货币归零）",
+  setting: "patchCurrencyPopout",
+  resolve: () => globalThis.crucible?.api?.applications?.elements?.HTMLCrucibleCurrencyElement,
+  method: "_buildElements",
+  guard: { method: "_buildElements", includes: 'removeAttribute("value")' },
+  wrap: (orig, setting) => function _buildElements(...args) {
+    const r = orig.apply(this, args);
+    if ( settingOn(setting) ) {
+      const v = Number(this._value) || 0;
+      this.setAttribute("value", String(v));
+      if ( !this.__tempfixCurrencySync ) {
+        this.__tempfixCurrencySync = true;
+        this.addEventListener("change", () => {
+          this.setAttribute("value", String(Number(this._value) || 0));
+        });
+      }
+    }
+    return r;
+  }
+});
+
+/* -------------------------------------------- */
 /*  D 系列：描述与数据的伤害类型不一致               */
 /* -------------------------------------------- */
 
@@ -1206,6 +1378,10 @@ Hooks.once("init", () => {
     "ember 读的是法术动作上不存在的 <code>damage.resource</code> 字段，结果恒为生命值。开启后改从那次被抵抗的骰子里取真实资源。动作本身的自动化是好的，本补丁<strong>不</strong>改标签、<strong>不</strong>加掷骰。");
   bool("patchAbyssMark", "N1 修正深渊「湮灭之印」的非法效果 ID",
     "ember 硬编码的效果 id 只有 15 个字符，不是合法的 Foundry 文档 ID，导致这个动作抛异常中止——什么都不发生、连聊天卡都不生成、资源也不扣。开启后换成合法 ID（新旧标记都能清理）。");
+  bool("patchEnchantmentBonus", "B1/B2 回搬：词缀推导的附魔加值不生效（上游 bea623d8）",
+    "附魔加值在数据准备的<strong>太早</strong>阶段就被算死，而词缀要到派生阶段才解析完——给武器加词缀后攻击掷骰里没有附魔加值、给护甲加词缀后闪避防御不涨，手动把附魔等级改成同一档反而就好了。上游已在开发版修好（尚未发布），本项把它回搬。");
+  bool("patchCurrencyPopout", "B3 回搬：角色卡弹成独立窗口后货币归零（上游 1659465a）",
+    "货币元素在首次构建时把自己的 value 属性删掉了，元素被搬进弹窗重新连接时只能读回 0。改动一次货币又会自己好。上游已在开发版修好（尚未发布），本项把它回搬。");
   bool("patchDamageTypes", "D 系列 修正描述与数据不符的伤害类型",
     "三条动作的伤害类型与自己的描述矛盾：「毒液喷吐」结算成电击（上游已在开发版改成毒），「自毁」的烈焰爆炸结算成穿刺，「吞噬思绪」的灵能伤害落回天生武器的钝击。后果是抗性算错——吃火抗的角色挡不住火焰爆炸，吃钝击抗性的重甲反而能挡下纯精神攻击。开启后按描述修正。");
   bool("patchSwallowEffectId", "C1 修正「吞噬」的非法效果 ID（crucible 自身缺陷）",
@@ -1250,6 +1426,7 @@ Hooks.once("setup", () => {
   installActionHookPatch();
   installActorHookPatch();
   installAffixTrainingFix();
+  installPrototypePatches();
   // ember 在 init 注册钩子，而 #prepareHooks 在角色数据准备时才快照 —— setup 正好夹在中间
   installHookOverrides();
 });
@@ -1261,6 +1438,7 @@ Hooks.once("ready", async () => {
   installActionHookPatch();
   installActorHookPatch();
   installAffixTrainingFix();
+  installPrototypePatches();
   installHookOverrides();
 
   await loadCantripSources();
@@ -1276,6 +1454,8 @@ Hooks.once("ready", async () => {
     HOOK_OVERRIDES,
     reprepareActors,
     installAffixTrainingFix,
+    installPrototypePatches,
+    PROTOTYPE_PATCHES,
     /** 让 N10 的上游 guard 重新检测一次（测试用；正常运行时缓存一次即可） */
     resetTurnsGuard() { _rejectsTurns = null; },
     /** 自检：把每个补丁当前的实际状态打印出来 */

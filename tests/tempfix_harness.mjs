@@ -290,9 +290,53 @@ class CrucibleActiveEffect {
   }
 }
 
+/**
+ * 武器/护甲数据模型的桩件，复刻 0.10.1 的**缺陷本身**（上游 bea623d8 修的就是这个）：
+ * 附魔加值在 `prepareBaseData` 里就算死（:45092 / :44225），而**词缀**要到派生阶段才解析完，
+ * 所以 base 阶段读到的 `config.enchantment` 是词缀生效之前的值。
+ * 桩件用 `__affixEnchantment` 表示「词缀最终会推导出来的附魔加值」，
+ * `config` 是个 getter：base 阶段（`__derived` 为假）返回 0，派生阶段才返回真值。
+ */
+class CruciblePhysicalStub {
+  constructor() { this.__affixEnchantment = 0; this.__derived = false; }
+  get config() { return { enchantment: { bonus: this.__derived ? this.__affixEnchantment : 0 } }; }
+}
+class CrucibleWeaponModel extends CruciblePhysicalStub {
+  // :45092 —— 特征串必须与 guard 对得上
+  prepareBaseData() {
+    const { enchantment } = this.config;
+    this.actionBonuses = { ability: 0, skill: -4, enchantment: enchantment.bonus };
+  }
+  prepareDerivedData() { this.__derived = true; }
+}
+class CrucibleArmorModel extends CruciblePhysicalStub {
+  // :44225 —— 同上
+  prepareBaseData() {
+    const { enchantment } = this.config;
+    this.armor = { base: 0 };
+    this.dodge = { base: 10 + enchantment.bonus };   // category.dodge.base(this.armor.base) + enchantment.bonus
+  }
+  prepareDerivedData() { this.__derived = true; }
+}
+
+/** 自定义元素桩件：复刻 `_buildElements` 里那句致命的 removeAttribute（:7527） */
+class CurrencyElement {
+  constructor() { this.__attrs = {}; this.__listeners = {}; }
+  getAttribute(k) { return k in this.__attrs ? this.__attrs[k] : null; }
+  setAttribute(k, v) { this.__attrs[k] = String(v); }
+  removeAttribute(k) { delete this.__attrs[k]; }
+  addEventListener(type, fn) { (this.__listeners[type] ??= []).push(fn); }
+  dispatchEvent(ev) { for (const fn of this.__listeners[ev.type] ?? []) fn(ev); }
+  _buildElements() {
+    this._value = Number(this.getAttribute("value") || 0);
+    this.removeAttribute("value");
+  }
+}
+
 globalThis.CONFIG = {
   Actor: { documentClass: CrucibleActor },
-  ActiveEffect: { documentClass: CrucibleActiveEffect }
+  ActiveEffect: { documentClass: CrucibleActiveEffect },
+  Item: { dataModels: { weapon: CrucibleWeaponModel, armor: CrucibleArmorModel } }
 };
 /**
  * crucible 的符文 Spellcraft 词缀钩子（编译产物 :13668-13675）。
@@ -334,6 +378,7 @@ HOOKS_AFFIX.arrowSpellcraft = {
 globalThis.crucible = {
   api: {
     models: { CrucibleAction },
+    applications: { elements: { HTMLCrucibleCurrencyElement: CurrencyElement } },
     // 外层 freeze、子表可写 —— ember 正是靠这一点注册进来的（:14044 / ember.mjs:126744）
     hooks: Object.freeze({
       action: HOOKS_ACTION,
@@ -835,6 +880,61 @@ console.log("\nC 系列：crucible 自身的缺陷");
   check("C1 未知非法值会报警一次", warnCount > warnsBefore2);
   sw._SWALLOWED_EFFECT_ID = "swallowed00000000";
   setSetting("ember-crucible-tempfix.patchSwallowEffectId", true);
+}
+
+console.log("\nB 系列：从上游开发版回搬");
+{
+  // B1 武器：0.10.1 在 prepareBaseData 里就把附魔加值算死，而词缀要到派生阶段才解析完
+  const w = new CrucibleWeaponModel();
+  w.__affixEnchantment = 3;          // 词缀推导出 +3，但 base 阶段还看不到
+  w.prepareBaseData();
+  check("B1 base 阶段拿到的是词缀生效前的值（复现上游 bug）", w.actionBonuses.enchantment === 0, String(w.actionBonuses.enchantment));
+  w.prepareDerivedData();
+  check("B1 派生阶段被修正成词缀生效后的真值", w.actionBonuses.enchantment === 3, String(w.actionBonuses.enchantment));
+  w.prepareDerivedData();
+  check("B1 幂等：再跑一次仍是 3", w.actionBonuses.enchantment === 3);
+
+  // B2 护甲：base 里附魔值和 category 基数加在一起，只能按差额修正
+  const a = new CrucibleArmorModel();
+  a.__affixEnchantment = 2;
+  a.prepareBaseData();
+  check("B2 base 阶段 dodge.base = 基数 10 + 旧附魔 0", a.dodge.base === 10, String(a.dodge.base));
+  a.prepareDerivedData();
+  check("B2 派生阶段按差额补上 +2", a.dodge.base === 12, String(a.dodge.base));
+  a.prepareDerivedData();
+  check("B2 幂等：再跑一次仍是 12", a.dodge.base === 12, String(a.dodge.base));
+
+  // 反向：没有词缀时（前后一致）不该动
+  const a2 = new CrucibleArmorModel();
+  a2.__affixEnchantment = 0;
+  a2.prepareBaseData(); a2.prepareDerivedData();
+  check("B2 无词缀 → 不动 dodge.base", a2.dodge.base === 10, String(a2.dodge.base));
+
+  // 反向：关掉开关 → 回到上游原行为
+  setSetting("ember-crucible-tempfix.patchEnchantmentBonus", false);
+  const w2 = new CrucibleWeaponModel();
+  w2.__affixEnchantment = 3;
+  w2.prepareBaseData(); w2.prepareDerivedData();
+  check("B1 关掉开关 → 回到上游原行为", w2.actionBonuses.enchantment === 0, String(w2.actionBonuses.enchantment));
+  setSetting("ember-crucible-tempfix.patchEnchantmentBonus", true);
+
+  // B3 货币元素：_buildElements 把 value 属性删掉，弹窗重连时读回 0
+  const el = new CurrencyElement();
+  el.setAttribute("value", "175");
+  el._buildElements();
+  check("B3 属性被写回（弹窗重连能读到）", el.getAttribute("value") === "175", String(el.getAttribute("value")));
+  check("B3 _value 仍然正确", el._value === 175);
+
+  el._value = 999;                      // 模拟 GM 改了货币
+  el.dispatchEvent({ type: "change" });
+  check("B3 改值后属性同步", el.getAttribute("value") === "999", String(el.getAttribute("value")));
+
+  setSetting("ember-crucible-tempfix.patchCurrencyPopout", false);
+  const el2 = new CurrencyElement();
+  el2.setAttribute("value", "50");
+  el2._buildElements();
+  check("B3 关掉开关 → 回到上游原行为（属性被删）", el2.getAttribute("value") === null, String(el2.getAttribute("value")));
+  setSetting("ember-crucible-tempfix.patchCurrencyPopout", true);
 }
 
 console.log("\nD 系列：描述与数据的伤害类型不一致");
