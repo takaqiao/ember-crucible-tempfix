@@ -1718,7 +1718,83 @@ console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍
   check("原型补丁：读不到 Ember 版本 → 保守地继续生效", rollB1() === 3, String(rollB1()));
 
   ceilings.patchEnchantmentBonus = realB1;
-  check("恢复真实上限（0.10.2 未发）→ B1 照常生效", rollB1() === 3, String(rollB1()));
+
+  /**
+   * 0.10.2 已发布（2026-08）。B1–B5 的缺陷**上游都修好了**，本模块亲验：
+   *   B1 :47338 `this.actionBonuses = {ability: 0, skill: -4, enchantment: 0};`（原为 enchantment.bonus）
+   *   B2 armor 那句 `category.dodge.base(...) + enchantment.bonus` 已不存在
+   *   B3 `removeAttribute("value")` 已不存在
+   *   B4 :rollSkill 里已是 `check = response;`（采纳对话框换过的技能）
+   *   B5 已是 `if ( featuredEquipment.length >= 3 ) break;`
+   * 所以在 0.10.2 上这四个开关必须**全部自动停用**；而 0.10.1 的用户仍然要拿到补丁。
+   * 这一组把「版本一到就退休」钉死 —— 退早了 0.10.1 用户受害，退晚了就是无谓的重复修补。
+   */
+  const settingOnProbe = k => globalThis.emberCrucibleTempFix.__settingOn(k);
+  const B_KEYS = ["patchEnchantmentBonus", "patchCurrencyPopout",
+                  "patchSkillDialogSwap", "patchFeaturedEquipment"];
+  const realVer = game.system.version;
+
+  game.system.version = "0.10.1";
+  check("0.10.1 上 B 系列四条全部生效",
+    B_KEYS.every(k => settingOnProbe(k)), B_KEYS.filter(k => !settingOnProbe(k)).join(","));
+
+  game.system.version = "0.10.2";
+  check("0.10.2 上 B 系列四条全部自动停用",
+    B_KEYS.every(k => !settingOnProbe(k)), B_KEYS.filter(k => settingOnProbe(k)).join(","));
+  check("0.10.2 上 B1 的行为回到上游原样", rollB1() === 0, String(rollB1()));
+
+  game.system.version = "0.11.0";
+  check("更高版本同样停用", B_KEYS.every(k => !settingOnProbe(k)));
+
+  // 非 B 系列不受版本影响 —— 别把整批补丁一起误退休
+  check("0.10.2 上非 B 系列不受影响",
+    settingOnProbe("patchTurnsDuration") && settingOnProbe("patchAbyssMark"));
+
+  /**
+   * 0.10.2 顺带修好的另外六条（每条都在安装的 0.10.2 源码里读过新实现，并经三路独立证伪）。
+   * 这一组把**退休名单本身**钉死：将来谁手滑删掉一条，或者反过来多退休一条，都会红。
+   */
+  const RETIRED_IN_0102 = [
+    "patchEnchantmentBonus",   // B1/B2 #1396
+    "patchCurrencyPopout",     // B3    #1379
+    "patchSkillDialogSwap",    // B4    #1398
+    "patchFeaturedEquipment",  // B5    #1388
+    "patchRepeatedPrepare",    // I4    #1404
+    "patchAffixTraining",      // N11   #1423
+    "patchHasKnowledge",       // I2    #1412
+    "patchPrivateBiography",   // I3    #1406
+    "patchDefenseTypeLabel",   // I5    #1402
+    "patchFlankingToggle"      // I6    #1311
+  ];
+
+  game.system.version = "0.10.2";
+  const stillOn = RETIRED_IN_0102.filter(k => settingOnProbe(k));
+  check(`0.10.2 上这 ${RETIRED_IN_0102.length} 条全部自动停用`, stillOn.length === 0, stillOn.join(","));
+
+  game.system.version = "0.10.1";
+  const offAt101 = RETIRED_IN_0102.filter(k => !settingOnProbe(k));
+  check("0.10.1 上这些仍然全部生效（不能把老用户的补丁提前撤掉）",
+    offAt101.length === 0, offAt101.join(","));
+
+  /**
+   * ⚠ patchDamageTypes 差点被误判退休：上游 changelog 说改了 Noxious Spray 的伤害类型，
+   *   但那只动了 **crucible 自己的包**；ember 0.6.0 的对抗者快照里仍带 electricity。
+   *   判定者只扫了一侧，三个独立证伪者都抓到了。这条断言把这个教训固定下来。
+   */
+  game.system.version = "0.10.2";
+  check("patchDamageTypes 在 0.10.2 上仍然生效（ember 侧数据没跟着改）",
+    settingOnProbe("patchDamageTypes"));
+  check("退休名单里没有 patchDamageTypes",
+    !RETIRED_IN_0102.includes("patchDamageTypes"));
+
+  // 中央表与退休名单必须一致 —— 两处各写一遍，谁漏了都会红
+  const ceilKeys = Object.keys(ceilings).sort();
+  check("中央表的键集与退休名单完全一致",
+    JSON.stringify(ceilKeys) === JSON.stringify([...RETIRED_IN_0102].sort()),
+    `表:${ceilKeys.join(",")} / 名单:${[...RETIRED_IN_0102].sort().join(",")}`);
+
+  game.system.version = realVer;
+  check("恢复真实系统版本后 B1 又生效", rollB1() === 3, String(rollB1()));
 
   // settingOn 的**失败方向**必须是「保守生效」。
   // 这条不是理论洁癖：设置在 init 注册，而原型补丁的包装体在 setup 之后才被调用；

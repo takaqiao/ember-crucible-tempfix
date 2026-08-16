@@ -1,8 +1,8 @@
 {
   "id": "ember-crucible-tempfix",
   "title": "Ember / Crucible 临时修补",
-  "description": "针对 Crucible 系统与 Ember 模块上游若干数据/逻辑缺陷的运行时临时补丁，共 33 条，覆盖两侧：副手攻击判据（含徒手手位）、猝然撕咬范围、符文戏法与训练阶位、疗愈导流的恢复资源、被系统拒绝创建的效果时长、多条非法效果 ID、写错层级的加值、永久踉跄、目标作用域、防御与伤害类型标签、缺失的掷骰实现等。全部为运行时修补，不改动世界存盘数据；停用本模块即恢复原状（已生成的聊天卡保留当时的动作快照）。",
-  "version": "0.7.4",
+  "description": "针对 Crucible 系统与 Ember 模块上游若干数据/逻辑缺陷的运行时临时补丁，共 33 条。**在 crucible 0.10.2 上，其中 10 条已因上游修复而自动停用**，装 0.10.1 的用户仍然拿得到。覆盖两侧：副手攻击判据（含徒手手位）、猝然撕咬范围、符文戏法与训练阶位、疗愈导流的恢复资源、被系统拒绝创建的效果时长、多条非法效果 ID、写错层级的加值、永久踉跄、目标作用域、防御与伤害类型标签、缺失的掷骰实现等。全部为运行时修补，不改动世界存盘数据；停用本模块即恢复原状（已生成的聊天卡保留当时的动作快照）。",
+  "version": "0.8.0",
   "authors": [
     {
       "name": "takaqiao",
@@ -20,7 +20,8 @@
         "id": "crucible",
         "type": "system",
         "compatibility": {
-          "minimum": "0.10.0"
+          "minimum": "0.10.0",
+          "verified": "0.10.2"
         }
       }
     ],
@@ -40,7 +41,7 @@
   ],
   "url": "https://github.com/takaqiao/ember-crucible-tempfix",
   "manifest": "https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/module.json",
-  "download": "https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/module.zip",
+  "download": "https://github.com/takaqiao/ember-crucible-tempfix/releases/download/v0.7.4/module.zip",
   "readme": "https://github.com/takaqiao/ember-crucible-tempfix/blob/main/README.md",
   "changelog": "https://github.com/takaqiao/ember-crucible-tempfix/blob/main/CHANGELOG.md",
   "bugs": "https://github.com/takaqiao/ember-crucible-tempfix/issues",
