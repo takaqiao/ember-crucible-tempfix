@@ -52,7 +52,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.7.3";
+const SCRIPT_VERSION = "0.7.4";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
@@ -422,11 +422,18 @@ HOOK_OVERRIDES.push({
  * 那一半由 {@link PROTOTYPE_PATCHES} 里的 **N12** 补，两者共用 `patchTurnsDuration` 开关。
  *
  * 修法：把 `units` 从 `"turns"` 改成 `"rounds"`，数值不动，补上 `expiry`。
- * 依据是 crucible 自己的转换惯例 —— `SYSTEM.EFFECTS.staggered`（`:5740`）的产物就是
- * `{value: turns, units: "rounds", expiry: "turnStart"}`。
  *
  * > ⚠ 这是**解释**不是还原：上游没有 turns 这个单位，作者想要的「N 个回合」只能映射到 rounds。
  * >   数值等价与否无从考证（`implacableHunter` 写的是 `turns: 360`）。所以给了单独开关。
+ *
+ * > ⚠ **`expiry` 取 `turnEnd` 这一步没有本地可核的依据**（0.7.4 订正）。
+ * >   早先这里写着「依据是 crucible 自己的转换惯例 —— `SYSTEM.EFFECTS.staggered`(:5740)」，
+ * >   **那句是错的**：crucible 自家两个 turns→rounds 生成器**两个值都用** ——
+ * >   `staggered`(`:5740`) 是 `turnStart`，`stunned`(`:5757`) 是 `turnEnd`。没有惯例可援引。
+ * >   真正的依据是上游一次迁移 commit（48bf4391f7 / PR #695），
+ * >   而本机只有编译产物、没有 git 历史，**这条无法从安装的文件复核**。
+ * >   影响面：选错只是让效果多撑或少撑约一个回合，属数值偏差；
+ * >   主前提（turns 会被拒绝创建）是硬事实，不受这条影响。
  *
  * 注：本机数据里 `months` 用法为 0 条，所以只处理 turns。
  */
@@ -458,13 +465,14 @@ const turnsDurationPatch = {
       const d = effect?.duration;
       if ( !d || (d.units !== "turns") ) continue;
       d.units = "rounds";
-      // expiry 用 turnEnd 而不是 turnStart —— 依据是上游自己迁移同一种数据时的映射：
-      // commit 48bf4391f7（PR #695「Migrate ActiveEffect expiry to V14 native schema」）
-      // 把自家 _source 里旧的 `{turns:N, rounds:null}` 全部迁成
-      // `{value:N, units:"rounds", expiry:"turnEnd"}` —— 实测 49/49，零例外。
-      // （turnStart 是上游给 `{rounds:N}` 那种数据的映射，套到 turns 数据上会多撑约两个 turn。）
-      // 注意：N3 的 sentinelKick 保持 turnStart，它的数据不是 turns 型，
-      // 最近的权威是 crucible 自家的 SYSTEM.EFFECTS.staggered 生成器（:5740），产出就是 turnStart。
+      // expiry 取 turnEnd，依据是上游一次迁移 commit（48bf4391f7 / PR #695）把自家旧的
+      // `{turns:N, rounds:null}` 迁成 `{value:N, units:"rounds", expiry:"turnEnd"}`。
+      // ⚠ **本机无法复核这条**：只有编译产物，没有 git 历史（0.7.4 订正）。
+      //    也**不要**拿 SYSTEM.EFFECTS.staggered(:5740) 当依据 —— 它是 turnStart，
+      //    而同族的 stunned(:5757) 是 turnEnd；crucible 自己两个值都用，没有惯例。
+      //    选错只影响时长约一个回合，不影响「效果能不能建出来」这个主目的。
+      // 注意：N3 的 sentinelKick 保持 turnStart —— 它的数据不是 turns 型，
+      //      且它就是 staggered，直接对得上 :5740 那个生成器。
       d.expiry ??= "turnEnd";
     }
   }
@@ -902,7 +910,8 @@ const settingOn = key => {
  * 物品被角色持有时 `transfer:true` 的效果直接创建、GM 手动拖效果、宏里 `createEmbeddedDocuments`
  * ——这几条路 N10 一条都拦不到。全包深扫（409 条动作之外另算）在 `items[].effects[]` 上
  * 找到 **22 个** `units:"turns"` 效果，其中 `crucible-adventure` 包（真正会进 crucible 世界的那个）
- * 占 6 个，最扎眼的是神话尖塔守护者 Mythspire Guardian 的「濒临死亡 Nearing Death」——它是 `transfer:true`，
+ * 占 6 个，最扎眼的一条挂在神话尖塔守护者 Mythspire Guardian 的天赋
+ * 「濒临死亡 Nearing Death」上，效果本身叫「消损之毒 Wasting Poison」——它是 `transfer:true`，
  * 意味着这个天赋**一被持有就该生效，实际上永远建不出来**。
  *
  * ⚠ 为什么必须包 `_preCreate` 而不是挂 `preCreateActiveEffect` 钩子：
@@ -924,7 +933,7 @@ PROTOTYPE_PATCHES.push({
   guard: { method: "_preCreate", includes: '["months", "turns"].includes(this.duration.units)' },
   wrap: (orig, setting) => async function _preCreate(...args) {
     if ( settingOn(setting) && (this.duration?.units === "turns") ) {
-      // expiry 映射与 N10 一致（上游 48bf4391f7 的 49/49）；已有 expiry 就不动。
+      // expiry 与 N10 取同一个值（依据与告诫见 N10 那段：本机无法复核）；已有 expiry 就不动。
       this.updateSource({ duration: { units: "rounds", expiry: this.duration.expiry ?? "turnEnd" } });
     }
     return orig.apply(this, args);
@@ -1346,12 +1355,29 @@ for ( const a of EFFECT_ID_ALIGNMENTS ) {
  *   if ( game.user.isGM ) cardData.targetLabel = `${cardData.defenseType} ${cardData.dc}`;
  *
  * 但模板渲染的是 `{{targetLabel}}`（`templates/dice/standard-check-chat.hbs:13`），
- * 而那一行**只给 GM 赋值** —— 非 GM 于是看不到防御类型。
+ * 而 `:3328` 那一行**只给 GM 改写** —— 非 GM 看到的是别的东西。
+ *
+ * ⚠ **本条的判据曾经写错，整条补丁从未执行过一次**（0.7.4 修正）。
+ * 旧判据是 `!cardData.targetLabel`，前提是「非 GM 时上游根本没赋值」。**那是错的**：
+ * `:3312` 调 `super` 时，基类 `StandardCheck#prepareDiceResultContext`（`:2202`）
+ * 已经给**所有人**赋过了 ——
+ *
+ *   :2205  const defenseType = _loc("DICE.DC");            // 字面量 "DC"
+ *   :2209  const skill = SYSTEM.SKILLS[this.data.type];    // 攻击骰的 type 不是技能 → undefined
+ *   :2210  const label = skill?.label ?? defenseType;      // → "DC"
+ *   :2211  const dcLabel = game.user.isGM ? … : "";
+ *   :2212  targetLabel = dcLabel ? `${label} ${dcLabel}` : label;
+ *
+ * 非 GM 拿到的是字符串 **"DC"**（truthy），于是 `!cardData.targetLabel` 恒假。
+ * 也就是说：玩家看到的一直是「DC」，而这条补丁**在旁边空转**，
+ * 设置面板却宣称它已经解决了这个问题 —— 比不修更糟，因为它掩盖了真实状态。
  *
  * **防御类型本来就是公开信息**（条目描述里白纸黑字写着「攻击其反射」），
- * 该藏的只有 DC 数值。现在连类型一起被抹掉，纯属实现疏漏。
+ * 该藏的只有 DC 数值。
  *
- * 修法：非 GM 时把 `targetLabel` 补成**只有类型、不带数字**的形式 —— DC 仍然藏着。
+ * 新判据：只在**非 GM** 且 `targetLabel` **还没包含防御名**时，把它替换成防御名本身。
+ * 不看空不空 —— 要替换的恰恰是那个非空的占位符 "DC"。
+ * 「还没包含」这一条让上游哪天自己修好之后本补丁自动空转。
  */
 PROTOTYPE_PATCHES.push({
   label: "AttackRoll#_prepareChatRenderContext（I5 玩家端看不到防御类型）",
@@ -1362,8 +1388,12 @@ PROTOTYPE_PATCHES.push({
   wrap: (orig, setting) => async function _prepareChatRenderContext(...args) {
     const cardData = await orig.apply(this, args);
     if ( !settingOn(setting) ) return cardData;
-    // 只在「上游没给赋值」时补，且只补类型 —— 绝不把 DC 泄漏给玩家
-    if ( cardData && !cardData.targetLabel && cardData.defenseType ) {
+    // 只动非 GM，且只写**类型**（`defenseType` 里没有数字）—— 绝不把 DC 泄漏给玩家。
+    // 判「还没包含防御名」而不是判空：非 GM 的 targetLabel 是占位符 "DC"，非空。
+    // 上游哪天自己把类型带上了，这里就自动空转。
+    const isGM = !!globalThis.game?.user?.isGM;
+    if ( cardData && !isGM && cardData.defenseType
+      && !String(cardData.targetLabel ?? "").includes(cardData.defenseType) ) {
       cardData.targetLabel = cardData.defenseType;
     }
     return cardData;
@@ -1576,6 +1606,18 @@ function injectRuneCantrips(actor, actions) {
     if ( !cfg ) continue;
     if ( actions[cfg.actionId] ) continue;                                   // 玩家自己也学了 Rune: X
     if ( item.system.actions?.some(a => a.id === cfg.actionId) ) continue;   // 条目自己就带
+    // ⚠ 这里分两种性质完全不同的情况，各自一个开关（0.7.4 拆开的）：
+    //
+    //  (a) **陈旧快照** —— `crucible.summons` 里那 9 条 `Rune: X` 的 `actions` 是空数组，
+    //      而 `crucible.talent` 里**同名的正版**带着戏法。同一个条目两份数据自相矛盾，
+    //      是可证的缺陷。判据就是「它自己一个动作都没有」。
+    //
+    //  (b) **别的天赋顺带给了符文**（ember 四血统就是这样）—— 它们各自带着自己的
+    //      招牌动作，只是不含那个戏法。这**不是缺陷**：crucible 全文 `cantrip` 零命中，
+    //      `RUNES` 配置（`:5788` 起）也没有戏法字段 —— 系统从未承诺「有符文就有戏法」。
+    //      给它们补戏法是**内容判断**，不是修 bug，所以单独一个开关、提示语里说明白。
+    const isStaleSnapshot = !(item.system.actions?.length);
+    if ( !settingOn(isStaleSnapshot ? "patchRuneCantrips" : "patchLineageCantrips") ) continue;
     const source = CANTRIP_SOURCES[cfg.actionId];
     if ( !source ) continue;
 
@@ -1803,7 +1845,8 @@ function installActorHookPatch() {
         try { fixTransientWeaponSlots(this); }
         catch ( err ) { warn("修正徒手手位失败", this?.name, err); }
       }
-      if ( on("patchRuneCantrips") ) {
+      // 两条开关任一开着就进去；具体某个天赋该按哪条处理，由循环内逐条判
+      if ( on("patchRuneCantrips") || on("patchLineageCantrips") ) {
         try { injectRuneCantrips(this, args[0]); }
         catch ( err ) { warn("注入符文戏法失败", this?.name, err); }
       }
@@ -2329,6 +2372,8 @@ Hooks.once("init", () => {
     "符文知识拿到了，训练阶位却没设上，施放该符文的法术按「未受训 −4」结算。开启后正常设上。");
   bool("patchRuneCantrips", "③ P3 补上符文所授的戏法与训练阶位",
     "选了符文却拿不到它的招牌戏法；召唤合集里的旧快照还会让本命符文法术按「未受训 −4」结算。开启后运行时补齐。");
+  bool("patchLineageCantrips", "③ P3′ 给「顺带授予符文」的天赋也补上戏法（内容判断，非缺陷）",
+    "ember 四个血统给了符文却没给该符文的招牌戏法。但系统从没承诺「有符文就有戏法」，这些血统各自带着自己的招牌动作——补不补是内容取舍，不是修 bug。想严格照上游数据走就关掉它。上面那条 P3 修的是可证的缺陷（同一条目的两份数据自相矛盾），与本条无关。");
   bool("patchHasKnowledge", "③ I2 让手工添加的知识真正生效（上游 issue #1412）",
     "GM 手工加的知识不算数：用「评估力量」「洞悉弱点」时该拿到的 +2 恩惠骰不出现。开启后正常计入。");
   bool("patchThrowableOnly", "③ I7 投掷武器的下拉框只列扔得出去的武器（上游 issue #1288）",

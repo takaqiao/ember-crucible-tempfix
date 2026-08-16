@@ -30,7 +30,8 @@
 |---|---|---|
 | **P1** `offhandStrike` + N8 | 打完主手点副手攻击说「必须紧跟一次主手打击」；**空手时必然发生** | crucible 逻辑 bug |
 | **P2** `suddenBite` | 凯思血统「猝然撕咬」min=max=2，贴着敌人反而咬不到 | ember 数据笔误 |
-| **P3** 符文戏法 + N9 | 血统/召唤物给了符文却没给对应动作；旧快照还丢了训练阶位（−4） | 两侧数据缺口 |
+| **P3** 符文戏法 + N9 | `crucible.summons` 里 9 条 `Rune: X` 是旧快照：戏法与训练阶位全丢，而同名正版有 | crucible 陈旧数据 |
+| **P3′** 血统戏法 | 别的天赋顺带给了符文却没给戏法。**内容判断而非缺陷**（系统从未承诺两者绑定），单独开关 | 设计取舍 |
 | **P4** `mayisRestorativeRedirection` | 「疗愈导流」恢复的资源种类恒为生命值 | ember 读了不存在的字段 |
 | **N1** `abyssMarkUnmaking` | 「湮解印记」点了什么都不发生，连聊天卡都不生成 | 效果 id 只有 15 字符 |
 | **N10** 通用补丁 | **卡上写着「获得效果·∞」，人身上什么都没有**；九个血统的招牌变身全部中招 | 数据写 `{turns:N}`，而 `_preCreate` 拒绝 turns 单位 |
@@ -60,8 +61,8 @@ C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── docs\补丁详解.md            ← 每条补丁的根因与做法（原先在 README 里，0.7.0 拆出来）
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 与 §7 撤回记录、§6 已排除清单
 ├── tests\
-│   ├── tempfix_harness.mjs    ← 离线断言 307 条（不需要 Foundry）
-│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（47/47）
+│   ├── tempfix_harness.mjs    ← 离线断言 317 条（不需要 Foundry）
+│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（53/53）
 └── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
     ├── dump_all.mjs / dump_pack.mjs / dump_actions.mjs / index_actions.mjs / find_field.mjs
     │                           ← LevelDB 合集离线导出与检索（node；需要仓库根的 classic-level）
@@ -84,8 +85,8 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**307 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**307 passed / 0 failed**。
+**317 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**317 passed / 0 failed**。
 
 断言本身也验过 —— 变异测试把补丁逐个改回坏写法，期望 harness **变红**：
 
@@ -93,7 +94,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 ```
 
-当前 **47 处变异，47/47 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
+当前 **53 处变异，53/53 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
 加补丁时**同时加一条变异**：一条永远绿的断言和没有断言是一回事 ——
 这个脚本抓出过多条假绿，最近一条是「`settingOn` 读不到设置时保守生效」从来没被断言过。
 
@@ -111,7 +112,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 就绪时也会打一行：
 
 ```
-ember-crucible-tempfix | v0.7.3 已就绪 —— 补丁开关 31 项，控制面板 已注册（系统 0.10.1 / Ember 0.6.0）
+ember-crucible-tempfix | v0.7.4 已就绪 —— 补丁开关 32 项，控制面板 已注册（系统 0.10.1 / Ember 0.6.0）
 ```
 
 **对不上就 Ctrl+Shift+R**，在此之前任何症状都不必排查。
@@ -135,9 +136,9 @@ ember-crucible-tempfix | v0.7.3 已就绪 —— 补丁开关 31 项，控制面
 | `patchOffhandStrike` | P1 | **空手**打一次基础打击 →**点确认那张聊天卡**→ 再点副手攻击 | 能用。`weapons.mainhand.sourceSlot` 为 1（补之前是 0）、`id` 为 null |
 | `patchOffhandStrike` | P1′ | 让上一个动作**不是**打击，再点副手攻击 | 仍然被拦住 |
 | `patchSuddenBite` | P2 | 贴着敌人用猝然撕咬（`suddenBite`） | 能命中；`suddenBite` 为 `{minimum: null, maximum: 1}` |
-| `patchRuneCantrips` | P3 | 泽夫角色的动作列表 | `diagnose().cantrips` 里出现 `energize` |
-| `patchRuneCantrips` | P3′ | 已经自己学了 `Rune: Storm` 的角色 | **不应该**出现两个 energize |
-| `patchRuneCantrips` | N9 | 召唤一只火精怪 | 有 `enkindle`；`training.flame === 1` |
+| `patchLineageCantrips` | **P3′** | 泽夫角色的动作列表 | `diagnose().cantrips` 里出现 `energize`。⚠ 这条是**内容判断**：系统从没承诺「有符文就有戏法」，不认同就关掉它 |
+| `patchRuneCantrips` | P3″ | 已经自己学了 `Rune: Storm` 的角色 | **不应该**出现两个 energize |
+| `patchRuneCantrips` | **P3 / N9** | 召唤一只火精怪（走的是 `crucible.summons` 的旧快照） | 有 `enkindle`；`training.flame === 1`。这条才是可证的缺陷 |
 | `patchAffixTraining` | N11 | 装一件带符文 Spellcraft 词缀的物品 | `training` 里该符文为 1；控制台不再刷 prepareGrimoire 错误 |
 | `patchBewilderingGaze` | N5 | 用惑乱凝视（`bewilderingGaze`） | `bewilderingGaze.defenseType === "willpower"` |
 | `patchAntigravityStone` | N6 | 用反重力石（`antigravityStone`） | 不需要选别人；`antigravityStone.type === "self"` |
