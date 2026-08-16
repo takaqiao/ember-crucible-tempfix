@@ -23,7 +23,7 @@
 
 ## 1. 这是什么
 
-一个 Foundry 模块，用**运行时补丁**绕过 Crucible 0.10.1 与 Ember 0.6.0 的上游缺陷。
+一个 Foundry 模块，用**运行时补丁**绕过 Crucible（0.10.1 / 0.10.2 实测）与 Ember 0.6.0 的上游缺陷。
 不写世界存盘数据，停用模块刷新即恢复原状。
 
 | 补丁 | 症状 | 性质 |
@@ -61,8 +61,8 @@ C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── docs\补丁详解.md            ← 每条补丁的根因与做法（原先在 README 里，0.7.0 拆出来）
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 与 §7 撤回记录、§6 已排除清单
 ├── tests\
-│   ├── tempfix_harness.mjs    ← 离线断言 317 条（不需要 Foundry）
-│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（53/53）
+│   ├── tempfix_harness.mjs    ← 离线断言 327 条（不需要 Foundry）
+│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（56/56）
 └── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
     ├── dump_all.mjs / dump_pack.mjs / dump_actions.mjs / index_actions.mjs / find_field.mjs
     │                           ← LevelDB 合集离线导出与检索（node；需要仓库根的 classic-level）
@@ -85,8 +85,8 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**317 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**317 passed / 0 failed**。
+**327 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**327 passed / 0 failed**。
 
 断言本身也验过 —— 变异测试把补丁逐个改回坏写法，期望 harness **变红**：
 
@@ -94,7 +94,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 ```
 
-当前 **53 处变异，53/53 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
+当前 **56 处变异，56/56 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
 加补丁时**同时加一条变异**：一条永远绿的断言和没有断言是一回事 ——
 这个脚本抓出过多条假绿，最近一条是「`settingOn` 读不到设置时保守生效」从来没被断言过。
 
@@ -112,7 +112,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 就绪时也会打一行：
 
 ```
-ember-crucible-tempfix | v0.7.4 已就绪 —— 补丁开关 32 项，控制面板 已注册（系统 0.10.1 / Ember 0.6.0）
+ember-crucible-tempfix | v0.8.0 已就绪 —— 补丁开关 32 项，控制面板 已注册（系统 0.10.1 / Ember 0.6.0）
 ```
 
 **对不上就 Ctrl+Shift+R**，在此之前任何症状都不必排查。

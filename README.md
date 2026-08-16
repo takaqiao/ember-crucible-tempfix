@@ -17,6 +17,17 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 
 **依赖**：`crucible` 系统 ≥ 0.10.0。Ember 模块不是硬依赖 —— 没装 Ember 时相关条目不会命中任何东西。
 
+> ### 装 crucible **0.10.2** 的话
+>
+> 上游在 0.10.2 修好了其中 **10 条**，本模块会**自动停用**它们
+> （B1/B2、B3、B4、B5、I4、N11、I2、I3、I5、I6）——
+> 控制面板上显示为「上游已修」，控制台各打一条说明。**不需要你做任何事。**
+>
+> 装 **0.10.1** 的用户照旧拿到全部补丁：这是加版本天花板，不是删补丁。
+>
+> 剩下的 23 条在 0.10.2 上仍然需要，其中包括影响面最大的 N10/N12
+> （`_preCreate` 那道 turns 拦截三个版本一个字没改，数据也一条没迁走）。
+
 ---
 
 ## 控制面板
@@ -112,8 +123,8 @@ https://github.com/takaqiao/ember-crucible-tempfix/releases/latest/download/modu
 | | |
 |---|---|
 | 补丁数 | **33** |
-| 离线断言 | **317 条**（`node tests/tempfix_harness.mjs`） |
-| 变异测试 | **53/53**（`node tests/mutate.mjs`，把补丁改回坏写法，验断言真的会红） |
+| 离线断言 | **327 条**（`node tests/tempfix_harness.mjs`） |
+| 变异测试 | **56/56**（`node tests/mutate.mjs`，把补丁改回坏写法，验断言真的会红） |
 | 真实牌桌验证 | **1 条** |
 
 **已被现实证实的**：N10 —— 实测「强健体力」用了没任何效果、1 专注 + 1 点英雄气概白扣，与诊断逐字吻合。

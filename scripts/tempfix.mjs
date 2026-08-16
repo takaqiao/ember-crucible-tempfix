@@ -52,7 +52,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.7.4";
+const SCRIPT_VERSION = "0.8.0";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
@@ -886,10 +886,40 @@ const SETTING_GROUPS = {
  * @type {Record<string, {fixedIn?: string, fixedInEmber?: string}>}
  */
 const VERSION_CEILINGS = {
-  patchEnchantmentBonus: { fixedIn: "0.10.2" },   // B1/B2 上游 bea623d8
-  patchCurrencyPopout:   { fixedIn: "0.10.2" },   // B3   上游 1659465a
-  patchSkillDialogSwap:  { fixedIn: "0.10.2" },   // B4   上游 798a8638
-  patchFeaturedEquipment:{ fixedIn: "0.10.2" }    // B5   上游 ac1b5cfc
+  // ── 回搬自上游开发版的五条。0.10.2 已发布并全部包含这些修复（逐条亲验，见下）
+  patchEnchantmentBonus: { fixedIn: "0.10.2" },   // B1/B2 issue #1396；:47338 已是 `enchantment: 0`
+  patchCurrencyPopout:   { fixedIn: "0.10.2" },   // B3   issue #1379；`removeAttribute("value")` 已移除
+  patchSkillDialogSwap:  { fixedIn: "0.10.2" },   // B4   issue #1398；rollSkill 里已是 `check = response;`
+  patchFeaturedEquipment:{ fixedIn: "0.10.2" },   // B5   issue #1388；已是 `if (…length >= 3) break;`
+
+  // ── 0.10.2 顺带修好的六条。每条都在**安装的 0.10.2 源码里读过新实现**，
+  //    并经三路独立证伪（详见 CHANGELOG 0.8.0）。0.10.1 的用户仍然拿得到补丁。
+  patchRepeatedPrepare:  { fixedIn: "0.10.2" },   // I4  issue #1404
+                                                  //   `_configureUsage` 现在显式重置 bonuses：
+                                                  //   「Reset bonuses …so that repeated prepare() calls
+                                                  //    do not accumulate」+ `damageBonus: 0`
+  patchAffixTraining:    { fixedIn: "0.10.2" },   // N11 issue #1423
+                                                  //   crucible 自己的 `<rune>Spellcraft` 钩子改写成
+                                                  //   `this.system.training[runeId] = Math.max(...)`（数据模型）。
+                                                  //   已确认 ember 0.6.0 **没有**注册同名钩子去覆盖它。
+  patchHasKnowledge:     { fixedIn: "0.10.2" },   // I2  issue #1412
+                                                  //   `hasKnowledge` 改读聚合值
+                                                  //   `this.system.details?.knowledge?.has(id)`
+  patchPrivateBiography: { fixedIn: "0.10.2" },   // I3  issue #1406
+                                                  //   `_prepareContext` 里已是 `if ( isOwner ) Object.assign(…privateHTML…)`
+  patchDefenseTypeLabel: { fixedIn: "0.10.2" },   // I5  issue #1402
+                                                  //   `cardData.targetLabel = cardData.defenseType;`
+                                                  //   `if ( game.user.isGM ) cardData.targetLabel += \` ${cardData.dc}\`;`
+                                                  //   —— 与本模块 0.7.4 的做法一致
+  patchFlankingToggle:   { fixedIn: "0.10.2" }    // I6  issue #1311
+                                                  //   onChange 改成 `CrucibleTokenObject.refreshFlankingVisualization()`，
+                                                  //   逐 token 的循环整个没了（夹击机制在 #1424 里被重设计）
+
+  // ⚠ **`patchDamageTypes` 故意不在这里。** 上游 changelog 写着
+  //   「Changed the damage type of Noxious Spray from electricity to poison」，
+  //   但那只改了 **crucible 自己的包**；ember 0.6.0 的对抗者快照里
+  //   `noxiousSpray` 仍然带 electricity 标签，缺陷在本机依然活着。
+  //   （这条差点被误判退休 —— 判定者只扫了 crucible 一侧，三个独立证伪者都抓到了。）
 };
 
 /** 包装体内部实时读开关（关掉即刻回到上游原行为），并顺带受版本上限约束 */
@@ -2536,6 +2566,8 @@ Hooks.once("ready", async () => {
     __renderToolbox: renderToolbox,
     /** 面板类工厂；离线测试用它验「类建得起来、菜单注册得上」 */
     __getToolboxClass: getToolboxClass,
+    /** 开关的**最终**判定（设置 && 未被版本上限追上）；离线测试用它验退休时机 */
+    __settingOn: settingOn,
     /** 菜单注册（幂等，init/setup/ready 各试一次）；离线测试用它验重试与不抛 */
     __registerToolboxMenu: registerToolboxMenu,
     /** 重置类缓存（测试用：模拟 ApplicationV2 缺席） */

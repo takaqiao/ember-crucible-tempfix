@@ -2,6 +2,72 @@
 
 本文件记录对玩家可见的行为变化。行号级的取证过程在 `docs/上游缺陷诊断.md`。
 
+## 0.8.0 —— 跟进 crucible 0.10.2
+
+**上游 0.10.2 发布，33 条补丁里 10 条因上游修复而自动停用。**
+本机把 crucible 升到 0.10.2 后，把全部补丁的前提在**新源码上重新推导**了一遍
+（27 个 agent，行号一律重新定位，不复用 0.10.1 时期的任何结论），
+判「上游已修」的再经三路独立证伪。
+
+**装 0.10.1 的用户不受影响** —— 这是加版本天花板，不是删补丁。
+
+### 自动停用的 10 条
+
+每条都在**安装的 0.10.2 源码里读过新实现**，不是只信 changelog：
+
+| # | 上游 issue | 0.10.2 的新实现 |
+|---|---|---|
+| **B1/B2** | #1396 | `this.actionBonuses = {ability: 0, skill: -4, enchantment: 0}`，附魔加值挪到派生阶段 |
+| **B3** | #1379 | `removeAttribute("value")` 已移除 |
+| **B4** | #1398 | `check = response;`（采纳对话框换过的技能） |
+| **B5** | #1388 | `if ( featuredEquipment.length >= 3 ) break;` |
+| **I4** | #1404 | `_configureUsage` 显式重置 bonuses：「Reset bonuses …so that repeated prepare() calls do not accumulate」 |
+| **N11** | #1423 | crucible 自己的 `<rune>Spellcraft` 钩子改写 `this.system.training[runeId]`（数据模型而非文档） |
+| **I2** | #1412 | `hasKnowledge` 改读聚合值 `this.system.details?.knowledge?.has(id)` |
+| **I3** | #1406 | `if ( isOwner ) Object.assign(biography, {…privateHTML…})` |
+| **I5** | #1402 | `targetLabel = defenseType;`，然后 `if ( isGM ) targetLabel += " " + dc`（只有 GM 加数字） |
+| **I6** | #1311 | `onChange` 改成 `CrucibleTokenObject.refreshFlankingVisualization()`，逐 token 循环整个没了 |
+
+N11 额外查了一步：crucible 新写的钩子会不会被 ember 覆盖掉。
+**不会** —— ember 0.6.0 里 `Spellcraft` 只有 2 处命中，都不是钩子注册，
+那 12 个坏钩子本来就是 crucible 自己的。
+
+I5 值得一提：上游的修法与本模块 0.7.4 那次修正**思路完全一致**。
+而 0.7.4 的新判据是「`targetLabel` 还没包含防御名才补」——
+现在它恰好包含，于是自动空转。**如果还留着 0.7.4 之前的旧判据，现在同样是死代码，只是换了个死法。**
+
+I6 则是靠 `__guard` 退的：特征串 `canvas.tokens.controlled` 在新实现里已不存在，
+补丁自动退让并打出 0.7.2 加的那条警告。两套退休机制（guard 失配 + 版本上限）互相印证。
+
+### ⚠ 差点误退休一条：patchDamageTypes
+
+上游 changelog 写着「Changed the damage type of Noxious Spray from electricity to poison」，
+审计据此判它「上游已修」。**三个独立证伪者全部推翻了这个判定** ——
+上游只改了 **crucible 自己的包**，而 Ember 仍是 0.6.0，
+它的对抗者快照里 `noxiousSpray` **依然带 electricity 标签**，缺陷在本机活着。
+
+判定者只扫了一侧就下了结论。这正是「误退休一条仍然需要的补丁，比多留一条空转的危险得多」
+那条纪律要防的情况。现在有断言把它钉住。
+
+### 数据面在 0.10.2 上重新扫过
+
+N10 的「38 个动作 id / crucible 自占 7 个」与 N12 的「22 条物品自带效果」，
+**在 0.10.2 上重扫得到完全相同的数字** —— 升级没有迁走任何一条 turns 时长数据。
+`_preCreate` 那道 turns 拦截与 0.9.1 逐字节相同，三个版本一个字没改。
+
+### 关于行号
+
+模块注释与 docs 里的行号是在 **0.10.1** 上取的，0.10.2 的文件从 48308 行涨到 49241 行，
+**大部分行号已经漂了**。本版只订正了 N10/N12 这条最常被读的链路，其余保持原样并加了说明 ——
+逐条重标 200+ 处行号的出错概率高于它的价值；需要精确定位时以特征串搜索为准。
+
+### 测试
+
+317 → **327 条断言**；变异测试 53 → **56 处，56/56 全部被抓住**。
+新增的盯着退休名单本身：漏掉一条、多退休一条、门槛写早一版，三种都会红。
+
+---
+
 ## 0.7.4
 
 **一次多路对抗式审计的结果。** 把 32 条补丁的前提全部拿回安装的
