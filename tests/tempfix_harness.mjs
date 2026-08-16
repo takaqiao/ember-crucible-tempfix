@@ -491,10 +491,46 @@ class CrucibleBaseActorSheetStub {
  *   `if ( game.user.isGM ) cardData.targetLabel = ...`  ← 只给 GM
  * 而模板渲染的是 `{{targetLabel}}`（standard-check-chat.hbs:13），所以非 GM 什么都看不到。
  */
+/**
+ * `AttackRoll#_prepareChatRenderContext` 的桩件。
+ *
+ * ⚠ 这个桩件曾经**只复刻了一半**，害得 I5 的 5 条断言对着虚构行为长期变绿，
+ *   而真实的 I5 补丁**一次都没执行过**。教训：桩件只复刻「我以为的那一段」，
+ *   等于把自己的错误理解写成测试基准。必须把**整条调用链**复刻出来。
+ *
+ * 真实链条（crucible-compiled.mjs，本次亲读）：
+ *  ① 基类 `StandardCheck#prepareDiceResultContext`（:2202）
+ *     :2205  const defenseType = _loc("DICE.DC");            // 字面量 "DC"
+ *     :2208  if ( targetLabel === undefined ) {
+ *     :2209    const skill = SYSTEM.SKILLS[this.data.type];  // 攻击骰的 type 不是技能 → undefined
+ *     :2210    const label = skill?.label ?? defenseType;    // → "DC"
+ *     :2211    const dcLabel = game.user.isGM ? String(dc) : "";
+ *     :2212    targetLabel = dcLabel ? `${label} ${dcLabel}` : label;
+ *     → **非 GM 拿到的是 "DC"，不是空值**。这正是原补丁判据失效的原因。
+ *  ② `AttackRoll#_prepareChatRenderContext`（:3311）在 super 之后覆盖
+ *     :3325  cardData.defenseType = defense.shortLabel ?? defense.label;   // 真实防御名
+ *     :3328  if ( game.user.isGM ) cardData.targetLabel = `${defenseType} ${dc}`;
+ *     → 只有 GM 被改写；非 GM 保留基类那个 "DC"。
+ */
 class AttackRollStub {
   async _prepareChatRenderContext() {
-    const cardData = { dc: 12, defenseType: "反射" };
-    if (game.user.isGM) cardData.targetLabel = cardData.defenseType + " " + cardData.dc;
+    const dc = 12;
+    // ① 基类：给**所有人**都赋上 targetLabel
+    const dcLabel = game.user.isGM ? String(dc) : "";
+    const baseLabel = "DC";                       // SKILLS[type] 查不到 → 回落 _loc("DICE.DC")
+    const cardData = {
+      dc,
+      defenseType: "DC",                          // 基类给的是字面量，不是真实防御
+      targetLabel: dcLabel ? `${baseLabel} ${dcLabel}` : baseLabel
+    };
+    // ② AttackRoll 覆盖：真实防御名人人可见，但 targetLabel 只给 GM 改写
+    cardData.defenseType = "反射";
+    if ( game.user.isGM ) cardData.targetLabel = `${cardData.defenseType} ${dc}`;
+    // 测试用：模拟「上游哪天自己把防御名给了玩家」，此时本补丁必须放手
+    else if ( this.__upstreamFixed ) cardData.targetLabel = "反射（上游自己给的）";
+    // 测试用：模拟「上游改了 GM 那份的格式、不再含防御名」——
+    // 此时 includes 判据挡不住，只剩 !isGM 拦着。补丁仍然不许碰 GM 的那份。
+    if ( game.user.isGM && this.__gmLabelNoType ) cardData.targetLabel = "目标 12";
     return cardData;
   }
 }
@@ -848,7 +884,15 @@ console.log("\nP3 / N9 符文戏法与训练阶位");
   const talent = (id, rune, training = { type: "", rank: null }, actions = []) =>
     ({ id, type: "talent", name: id, system: { rune, training, actions } });
 
-  const zeph = talent("emberZephLineage", "storm", { type: "storm", rank: 1 });
+  /**
+   * ⚠ 真实的 ember 血统**自带自己的招牌动作**（实测 emberZephLineage 有
+   *   inscrutableVisage / menacingVisage / beguilingVisage 三条）。
+   *   桩件原先写成 actions: []，把它误建模成了「空的陈旧快照」——
+   *   而 0.7.4 起这两种情况走**不同开关**，判据正是「自己有没有动作」。
+   *   桩件不照实写，就测不出这个区分。
+   */
+  const zeph = talent("emberZephLineage", "storm", { type: "storm", rank: 1 },
+    [{ id: "inscrutableVisage" }, { id: "menacingVisage" }, { id: "beguilingVisage" }]);
   const actor = new CrucibleActor("D", [zeph]);
   actor.prepareData();
   check("注入了 energize", !!actor.system.actions.energize, Object.keys(actor.system.actions).join(","));
@@ -885,6 +929,47 @@ console.log("\nP3 / N9 符文戏法与训练阶位");
   const own = new CrucibleActor("Own", [talent("runeStorm0000000", "storm", { type: "storm", rank: 1 }, [{ id: "energize" }])]);
   own.prepareData();
   check("条目自己就带该动作 → 不重复注入", !own.system.actions.energize);
+
+  /**
+   * P3 与 P3′ 是**性质不同的两件事**，0.7.4 拆成两个开关：
+   *  P3  陈旧快照（`crucible.summons` 里 `Rune: X` 的 actions 是空数组，
+   *      而 `crucible.talent` 里同名正版有）—— 同一条目两份数据自相矛盾，**可证的缺陷**
+   *  P3′ 别的天赋顺带给了符文（ember 四血统）—— crucible 全文 `cantrip` 零命中、
+   *      `RUNES` 配置也没有戏法字段，系统从未承诺「有符文就有戏法」，**是内容判断**
+   * 判据：这个天赋自己有没有动作。没有 = 坏掉的快照；有 = 另一种东西。
+   */
+  {
+    const mkActor = (id, actions) => {
+      const a = new CrucibleActor("split", [talent(id, "storm", { type: "storm", rank: 1 }, actions)]);
+      a.prepareData();
+      return a;
+    };
+    const K_SNAP = "ember-crucible-tempfix.patchRuneCantrips";
+    const K_LINE = "ember-crucible-tempfix.patchLineageCantrips";
+
+    // 只关「血统」那条：快照仍然补，血统不补
+    setSetting(K_LINE, false);
+    check("关掉 P3′ → 陈旧快照仍然补戏法",
+      !!mkActor("runeStorm0000000", []).system.actions.energize);
+    check("关掉 P3′ → 自带动作的天赋不再补戏法",
+      !mkActor("emberZephLineage", [{ id: "inscrutableVisage" }]).system.actions.energize);
+    setSetting(K_LINE, true);
+
+    // 只关「快照」那条：反过来
+    setSetting(K_SNAP, false);
+    check("关掉 P3 → 陈旧快照不再补戏法",
+      !mkActor("runeStorm0000000", []).system.actions.energize);
+    check("关掉 P3 → 自带动作的天赋仍然补戏法",
+      !!mkActor("emberZephLineage", [{ id: "inscrutableVisage" }]).system.actions.energize);
+    setSetting(K_SNAP, true);
+
+    // 两条都关 → 一个都不补
+    setSetting(K_SNAP, false); setSetting(K_LINE, false);
+    check("两条都关 → 快照不补", !mkActor("runeStorm0000000", []).system.actions.energize);
+    check("两条都关 → 血统不补",
+      !mkActor("emberZephLineage", [{ id: "inscrutableVisage" }]).system.actions.energize);
+    setSetting(K_SNAP, true); setSetting(K_LINE, true);
+  }
 
   const healer = new CrucibleActor("Healer", [talent("healer0000000000", "life")]);
   healer.prepareData();
@@ -1231,12 +1316,23 @@ console.log("\nI 系列：上游还没修的开放 issue");
 
 console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 当前装备");
 {
-  // I5 #1402：defenseType 人人都算了，但 targetLabel 只给 GM 赋值
+  /**
+   * I5 #1402：defenseType 人人都算了，但 targetLabel 只有 GM 那份带防御名。
+   * ⚠ 非 GM 的 targetLabel **不是空的**，是占位符 "DC"（基类 :2212 赋的）——
+   *   补丁曾按「空才补」写判据，于是整条从未执行过。这里先钉死这个前提。
+   */
   const roll = new AttackRollStub();
   game.user.isGM = false;
+  setSetting("ember-crucible-tempfix.patchDefenseTypeLabel", false);
+  const upstream = await roll._prepareChatRenderContext();
+  check("I5 前提：上游给非 GM 的是占位符「DC」而非空值",
+    upstream.targetLabel === "DC", String(upstream.targetLabel));
+  setSetting("ember-crucible-tempfix.patchDefenseTypeLabel", true);
+
   let card = await roll._prepareChatRenderContext();
   check("I5 玩家端补上了防御类型", card.targetLabel === "反射", card.targetLabel);
   check("I5 但不泄漏 DC 数字", !String(card.targetLabel).includes("12"));
+  check("I5 玩家端不再是占位符「DC」", card.targetLabel !== "DC");
 
   game.user.isGM = true;
   card = await roll._prepareChatRenderContext();
@@ -1245,8 +1341,27 @@ console.log("\n显示层：I5 防御类型 / I6 夹击叠层 / B5 当前装备")
 
   setSetting("ember-crucible-tempfix.patchDefenseTypeLabel", false);
   card = await roll._prepareChatRenderContext();
-  check("I5 关掉开关 → 回到上游原行为（玩家端空）", !card.targetLabel);
+  check("I5 关掉开关 → 回到上游原行为（玩家端仍是「DC」）",
+    card.targetLabel === "DC", String(card.targetLabel));
   setSetting("ember-crucible-tempfix.patchDefenseTypeLabel", true);
+
+  // 上游哪天自己把防御名带给玩家了 → 本补丁必须空转，不许再插一手。
+  // 真跑一遍包装后的方法，不要只验判据表达式（那是同义反复）。
+  roll.__upstreamFixed = true;                 // 让桩件模拟「上游已修好」
+  card = await roll._prepareChatRenderContext();
+  check("I5 上游已带防御名 → 原样放行，不重复改写",
+    card.targetLabel === "反射（上游自己给的）", String(card.targetLabel));
+  delete roll.__upstreamFixed;
+
+  // GM 那份永远不许碰。当前上游格式下 includes 判据恰好也挡得住，
+  // 但那是巧合——上游一改 GM 的格式就只剩 !isGM 拦着了。这里把意图钉死。
+  game.user.isGM = true;
+  roll.__gmLabelNoType = true;
+  card = await roll._prepareChatRenderContext();
+  check("I5 GM 那份即使不含防御名也不许改写",
+    card.targetLabel === "目标 12", String(card.targetLabel));
+  delete roll.__gmLabelNoType;
+  game.user.isGM = false;
 
   // I6 #1311：关闭时上游只清 controlled，换选后旧图形成孤儿
   const cleared = [];
@@ -1511,7 +1626,8 @@ const EXPECTED_ORPHAN_SETTINGS = new Set([
   "patchAffixTraining",     // installAffixTrainingFix()
   "patchFlankingToggle",    // installFlankingToggleFix()
   "patchDamageTypes",       // patchDamageTypes()，setup 阶段一次性改 CONFIG
-  "patchRuneCantrips"       // P3：在 callActorHooks 包装里就地判定（tempfix.mjs:1636/1646），不走补丁表
+  "patchRuneCantrips",      // P3：在 callActorHooks 包装里就地判定，不走补丁表
+  "patchLineageCantrips"    // P3′：同上，且在 injectRuneCantrips 循环里**逐条**判定
 ]);
 
 console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍然要能用）");
@@ -1848,8 +1964,8 @@ console.log("\n控制面板与命令表");
 
   // 注册数：设置全注册完之后菜单才注册。init 中途抛的话这两个数都会掉，
   // 而现实里的症状正是「只剩十几条设置 + 没有面板」。
-  check("init 一路跑到底（31 项开关 + 1 个下拉 + 1 个菜单）",
-    regd.size === 31 && registeredMenus.length === 1,
+  check("init 一路跑到底（32 项开关 + 1 个下拉 + 1 个菜单）",
+    regd.size === 32 && registeredMenus.length === 1,
     `开关 ${regd.size} / 菜单 ${registeredMenus.length}`);
   check("下拉框在菜单之前注册（面板塌了也带不走它）",
     game.settings.settings?.has?.("ember-crucible-tempfix.redirectResource") !== false);
@@ -1982,7 +2098,7 @@ console.log("\n开关");
       game.modules.get = realGet;
     }
     check("diagnose 带上了系统版本", !!d.system, String(d.system));
-    check("diagnose 报出开关数", d.settingsRegistered === 31, String(d.settingsRegistered));
+    check("diagnose 报出开关数", d.settingsRegistered === 32, String(d.settingsRegistered));
     check("diagnose 报出面板注册状态", d.panelRegistered === true, String(d.panelRegistered));
   }
 }

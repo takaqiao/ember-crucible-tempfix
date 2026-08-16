@@ -54,6 +54,23 @@ const MUTATIONS = [
                    "      for ( const token of globalThis.canvas?.tokens?.controlled ?? [] ) {"],
   ["I6 开启时也乱清一遍", "    if ( !active ) {\n      // 上游只清了 controlled", "    if ( true ) {\n      // 上游只清了 controlled"],
 
+  // ── P3 / P3′ 的拆分（审计发现 P3 混了「可证缺陷」与「内容判断」两件事）
+  ["P3 判别反了（快照与血统互换）", "    const isStaleSnapshot = !(item.system.actions?.length);",
+   "    const isStaleSnapshot = !!(item.system.actions?.length);"],
+  ["P3 拆分失效（两者又共用一个开关）",
+   '    if ( !settingOn(isStaleSnapshot ? "patchRuneCantrips" : "patchLineageCantrips") ) continue;',
+   '    if ( !settingOn("patchRuneCantrips") ) continue;'],
+
+  // ── I5（审计发现整条从未执行过：判据写成「targetLabel 为空才补」，而它恒非空）
+  ["I5 判据退回「空才补」（复现死代码）",
+   "    if ( cardData && !isGM && cardData.defenseType\n      && !String(cardData.targetLabel ?? \"\").includes(cardData.defenseType) ) {",
+   "    if ( cardData && !cardData.targetLabel && cardData.defenseType ) {"],
+  ["I5 不再排除 GM（把 DC 数字覆盖掉）", "    if ( cardData && !isGM && cardData.defenseType",
+   "    if ( cardData && cardData.defenseType"],
+  ["I5 上游已修时仍然硬写", "      && !String(cardData.targetLabel ?? \"\").includes(cardData.defenseType) ) {", "      ) {"],
+  ["I5 顺手把 DC 也写进去", "      cardData.targetLabel = cardData.defenseType;",
+   "      cardData.targetLabel = `${cardData.defenseType} ${cardData.dc}`;"],
+
   // ── 缓存旧脚本的检测（用户 VPS 上「清单 0.7.0、实际跑 0.2.0」逼出来的）
   // ⚠ 不要在这里写死版本号 —— 每次发版都会让这条变异失配（已经栽过一次）。
   //   从 module.json 读，和被测代码用同一个真源。
