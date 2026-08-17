@@ -9,7 +9,7 @@
 
 初版 P4 建立在一个错误前提上：「数据里没有 `actionHooks` 键 ⇒ 这个动作没有自动化」。
 **系统压根不读那个字段** —— 钩子按 action id 从 `crucible.api.hooks.action[id]` 取（`:19047`），
-而 ember 在 `ember.mjs:126744` 用代码注册了 43 个。「疗愈导流」一直是完整实现的。
+而 ember 在 `ember.mjs:142536` 用代码注册了 42 个（Ember 0.6.1）。「疗愈导流」一直是完整实现的。
 
 初版补丁给它加了 `generic`，结果是：对**队友**掷一次针对 Wounds 阈值的攻击骰，
 同时 ember 自己的 postActivate 照跑 → 同一次动作两笔恢复。**开着比关着更糟。**
@@ -23,7 +23,7 @@
 
 ## 1. 这是什么
 
-一个 Foundry 模块，用**运行时补丁**绕过 Crucible（0.10.1 / 0.10.2 实测）与 Ember 0.6.0 的上游缺陷。
+一个 Foundry 模块，用**运行时补丁**绕过 Crucible（0.10.1 / 0.10.2 实测）与 Ember（0.6.0 / 0.6.1 实测）的上游缺陷。
 不写世界存盘数据，停用模块刷新即恢复原状。
 
 | 补丁 | 症状 | 性质 |
@@ -34,7 +34,7 @@
 | **P3′** 血统戏法 | 别的天赋顺带给了符文却没给戏法。**内容判断而非缺陷**（系统从未承诺两者绑定），单独开关 | 设计取舍 |
 | **P4** `mayisRestorativeRedirection` | 「疗愈导流」恢复的资源种类恒为生命值 | ember 读了不存在的字段 |
 | **N1** `abyssMarkUnmaking` | 「湮解印记」点了什么都不发生，连聊天卡都不生成 | 效果 id 只有 15 字符 |
-| **N10** 通用补丁 | **卡上写着「获得效果·∞」，人身上什么都没有**；九个血统的招牌变身全部中招 | 数据写 `{turns:N}`，而 `_preCreate` 拒绝 turns 单位 |
+| **N10** 通用补丁 | **卡上写着「获得效果·∞」，人身上什么都没有**；19 个动作，crucible 自己就占 7 个 | 数据写 `{turns:N}`，而 `_preCreate` 拒绝 turns 单位 |
 | **N2** `sentinelShielding` / `tyraphicTransformation` | 加值一条不生效（**需与 N10 同开**，否则效果压根不会被创建） | `changes` 写在了 effect 顶层 |
 | **N3** `sentinelKick` | 「斥退踢击」的踉跄**永不消失**，每回合 −2 动作点 | duration 有 value 没 units |
 | **N4** `heartSparkOfEmber` | 「余烬之火花」复活友方的分支永远选不中目标 | scope 写成了 ENEMIES |
@@ -112,7 +112,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 就绪时也会打一行：
 
 ```
-ember-crucible-tempfix | v0.8.0 已就绪 —— 补丁开关 32 项，控制面板 已注册（系统 0.10.1 / Ember 0.6.0）
+ember-crucible-tempfix | v0.8.1 已就绪 —— 补丁开关 32 项，控制面板 已注册（系统 0.10.2 / Ember 0.6.1）
 ```
 
 **对不上就 Ctrl+Shift+R**，在此之前任何症状都不必排查。
@@ -148,9 +148,9 @@ ember-crucible-tempfix | v0.8.0 已就绪 —— 补丁开关 32 项，控制面
 
 | 设置键 | # | 怎么看 | 期望 |
 |---|---|---|---|
-| `patchTurnsDuration` | **N10** | 用任一血统的招牌变身（如 `tyraphicTransformation`） | **身上真的出现效果图标**且 N 轮后消失；`patches.universal` 含 turnsDuration<br>✅ **已由用户实测确认缺陷存在**（「强健体力」用了没效果，1 专注 + 1 点英雄气概白扣） |
+| `patchTurnsDuration` | **N10** | ⚠ **Ember 0.6.1 起别再用血统变身验** —— 上游已把那九个迁好，照着验会看到本来就正常的行为。改用仍中招的：`shieldBash` 盾牌猛击（crucible 单机即可复现）或 `steamVent` 熔毁 | **身上真的出现效果图标**且 N 轮后消失；`patches.universal` 含 turnsDuration<br>缺陷曾由用户在 **Ember 0.6.0** 上实测确认（「强健体力」用了没效果，1 专注 + 1 点英雄气概白扣）；该动作在 0.6.1 已被上游修好 |
 | `patchTurnsDuration` | **N12**（同一开关） | 把 `crucible-adventure` 的神话尖塔守护者 Mythspire Guardian 拖上桌 —— 它的「濒临死亡 Nearing Death」是 `transfer:true` | 该 token 身上直接带着「消损之毒 Wasting Poison」效果；控制台**不再**出现 `does not support effect durations of unit "turns"` |
-| `patchEffectChanges` | N2 | 用强化护盾（`sentinelShielding`）—— **先确认 N10 那格过了** | 图标出现后，护甲防御 +3 真的涨了 |
+| `patchEffectChanges` | N2 | 用强化护盾（`sentinelShielding`）。Ember 0.6.0 上要**先确认 N10 那格过了**；0.6.1 起该效果自己就能创建 | 图标出现后，护甲防御 +3 真的涨了 |
 | `patchAbyssMark` | N1 | 暴击后用湮解印记（`abyssMarkUnmaking`） | 正常出卡、扣资源；`patches.hookOverrides` 显示已覆盖 |
 | `patchStaggerDuration` | N3 | 被斥退踢击（`sentinelKick`）命中 | 踉跄 1 轮后消失，不是 ∞ |
 | `patchDarkflameCirclet` | N7 | 佩戴并投注暗焰头环后用暗焰光束 | 正常出卡（控制台仍可能有一条 initialize 的 error，那是补不掉的化妆问题） |
@@ -160,7 +160,7 @@ ember-crucible-tempfix | v0.8.0 已就绪 —— 补丁开关 32 项，控制面
 | `patchDawnBeaconScope` | C5 | 用曙光信标（`dawnBeacon`） | 聊天卡上目标数 > 0、有骰子 |
 | `patchMissingRollProvider` | X1 | 触发令人作呕的脓疱（`repugnantPustules`） | 聊天卡上有伤害骰。**数值来自系统默认，非上游权威值** |
 | `patchMissingRollProvider` | X1′ | 触发深渊遗骸（`abyssalRemains`） | 同上 |
-| `patchDamageTypes` | D-1 | 用剧毒喷雾（`noxiousSpray`） | 伤害类型是毒，不是电击 |
+| `patchDamageTypes` | D-1 | ~~剧毒喷雾~~ —— **上游已修**：crucible 0.10.2 与 ember 0.6.1 的三份副本都已是 `poison`，本格按 `when()` 判据自动空转 | 无需验（另两格仍要验） |
 | `patchDamageTypes` | D-2 | 用自毁（`selfDestruct`） | 算火焰，不是穿刺 |
 | `patchDamageTypes` | D-3 | 用吞噬思维（`devourThoughts`） | 灵能伤害，不落回天生武器的钝击 |
 | `patchWildStrike` | I1 | 让**没有天生武器**的角色点狂野打击（`wildStrike`） | 被拦住，不再白刷动作点 |

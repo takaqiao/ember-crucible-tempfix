@@ -2,6 +2,91 @@
 
 本文件记录对玩家可见的行为变化。行号级的取证过程在 `docs/上游缺陷诊断.md`。
 
+## 0.8.1 —— 跟进 Ember 0.6.1
+
+**上游 Ember 0.6.1 发布，零条补丁退休，但文案债很重。**
+ember.mjs 从 130099 涨到 145913 行（+12%）。把 ember 侧全部补丁的前提重推了一遍，
+这次手上有 **0.6.0 的副本**（从 `ember060.zip` 抽出 `ember.mjs`），
+所以每条「上游改了吗」都能在两个版本里各定位一次、直接对照，而不是靠推测。
+
+### 代码改动：零
+
+**33 条里仍然需要 23 条，与升级前完全相同。** 没有一条该加 `fixedInEmber`。
+
+### ⚠ N10 的影响面缩了一半：38 → 19
+
+Ember 0.6.1 的 changelog 里有一句
+「Fixed an issue with "turns"-unit durations, leading to them never applying」——
+那正是 N10。实扫结果：
+
+| | 0.6.0 | 0.6.1 |
+|---|---|---|
+| 受影响动作 id | 38 | **19** |
+| ├ crucible 侧 | 7 | **7**（一条没动） |
+| └ ember 侧（含共有） | 32 | **13** |
+| N12 物品自带效果 | 22 | **25** ↑ |
+
+**「九个血统的招牌变身全部中招」这句话作废了** —— 上游把泰拉菲克变形 / 结晶化创伤 /
+极限代谢 / 活石 / 规整节律 / 刺棘树皮 / 强健体力 / 无情猎手 / 泽夫三面容全部迁好，
+`crucible-character` 包现在 26 条效果时长、**0 条是 turns**。
+那是本仓最醒目的一句话，README / HANDOFF / 详解 / 探针里全部改掉了。
+
+**但 N10/N12 短期内退不了休**：crucible 自己那 7 个一条没动，而物品自带效果那一半
+**反而从 22 涨到 25** —— 新加的怪物仍在用 turns 写。
+
+### 一个被上游追认的判断
+
+上游迁移用的正是 `units: "rounds"` + `expiry: "turnEnd"` + **数值不变**
+（`implacableHunter` 的 `value: 360` 原样保留），与本模块的映射**逐字一致**。
+
+0.7.4 时一次审计指出「`expiry` 取 `turnEnd` 在本机无法复核」，还发现我援引的
+`SYSTEM.EFFECTS.staggered` 恰好指向相反的 `turnStart`。**现在上游用自己的迁移结果追认了它。**
+README 里那句「无从考证」相应改成了「有上游背书」。
+
+### D-1 上游已修，但 `patchDamageTypes` **不退休**
+
+crucible 0.10.2 与 ember 0.6.1 的**三份** `noxiousSpray` 副本全都改成了 `poison`。
+但审计判它「上游已修 → 加 `fixedInEmber`」是**错的**，三个证伪者都指出了同一点：
+`patchDamageTypes` 一个开关管三条动作，另外两条**逐字未改、仍然是坏的** ——
+
+- `selfDestruct`：`["generic","fortitude","piercing","fire"]`，`piercing` 排在 `fire` 前，
+  `damageType ??=` 先到先得 → 结算成穿刺，与描述的 "fiery explosion" 相悖
+- `devourThoughts`：`["melee","natural","weakened","morale"]`，一个伤害类型标签都没有
+
+加 ceiling = 静默摘掉两条真实修复。正确状态是**代码一行不动**：
+`when(a){ return a.tags.has("electricity") }` 在三份副本上全部为 false，
+noxiousSpray 那一格**按设计自动空转**，而 0.6.0 的用户照旧拿到修复。
+
+### 其余数字订正
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| ember 注册的动作钩子 | 43 | **42**（少掉 `oozeElectrifiedPseudopod`） |
+| ember 并入注册表的行号 | `:126744` | `:142536` |
+| N2 / E2 的「依赖 N10」 | 无条件 | **仅 Ember 0.6.0**；0.6.1 起那四个动作的时长已被迁走 |
+
+### ⚠ 取证能力退化：队伍 token 探针的 L4 瞎了
+
+`probes/console_party_token_diagnose.js` 的 L4 靠读 ember 内部 9 个符号发现
+「改了 renderable 却没复原」的泄漏。**0.6.1 把这套搬进了 `EmberVista#applyEditorVisibility`
+并改用私有 WeakMap** —— 不是删了，是外部再也读不到。
+
+后果：L4 的几个判据恒为空 / 恒为 false，VERDICT 的 H 档成了**永不点亮的死分支**。
+**带着这个瞎点跑，会把「探针没报泄漏」误读成「没有泄漏」** —— 正是本项目一再要防的
+「路径空转当成缺陷消失」。已在探针头部加了醒目警告；L0/L1/L2/L3/L5 不受影响。
+
+（附带：0.6.0 那个泄漏本身上游已经修好，修在 `EmberVista._tearDown`。
+另外 changelog 提到修了「party token would render black squares after returning to
+the Megaregion」，但审计三路一致认为**证据不足**，不能断定与本探针追的「token 完全不可见」
+是同一件事 —— 那需要开 Foundry 复现才能定。）
+
+### 测试
+
+**327 条断言 / 56 处变异全部不变**，因为这一版没动代码。
+另外确认：harness 与 mutate 里**没有**硬编码 38/22 这些数字，改文案不会误红。
+
+---
+
 ## 0.8.0 —— 跟进 crucible 0.10.2
 
 **上游 0.10.2 发布，33 条补丁里 10 条因上游修复而自动停用。**

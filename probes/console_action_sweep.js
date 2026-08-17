@@ -395,7 +395,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
   const harvestActor = (actor, origin) => {
     pushActions(actor.actions, `${origin} > ${actor.name}`, actor);
     // 效果文档也要收：actor 自己身上的，以及**它每件物品自带的**。
-    // 后者是 D-D3（N12）的主战场 —— 冒险包里 22 个坏时长效果全都挂在
+    // 后者是 D-D3（N12）的主战场 —— 冒险包里 25 个坏时长效果（0.6.0 时 22 个，0.6.1 反而涨了）全都挂在
     // `doc.actors[].items[].effects[]` 上，只收 actions 会把它们整批漏掉。
     if ( scanEffectDocs ) {
       for ( const e of actor.effects ?? [] ) effectDocs.push({effect: e, origin: `${origin} > ${actor.name}`});
@@ -622,7 +622,8 @@ globalThis.crucibleSweep = async function crucibleSweep({
 
   /**
    * ── A-D1  duration.units ∈ {turns, months} ⇒ 效果压根不会被创建
-   *    覆盖：**N10**（九个血统的招牌变身 + 一批敌手动作）
+   *    覆盖：**N10**（19 个动作：crucible 自己 7 个 + ember 侧敌手天赋与消耗品 13 个。
+   *          Ember 0.6.1 已把九个血统的招牌变身全部迁好，别再拿它们当样本）
    *    机制：`CrucibleActiveEffect._preCreate`(:39581-39584) 对这两个单位
    *          `console.warn` + `return false` —— 文档不创建，聊天卡照写「获得…」。
    *    判据只读 S2（活对象）的 `effect.duration.units`。
@@ -1356,7 +1357,7 @@ globalThis.crucibleSweep = async function crucibleSweep({
     "thrown 的 `??= 10`（:4251）也只在此前没人填过时生效 ⇒ 换宿主结论可能变，看 finding 的 preparedAgainst。");
 
   R.coverage = {
-    "A-D1 EFFECT_DURATION_REJECTED": "N10（38 个动作 units:\"turns\" 的效果永不创建）",
+    "A-D1 EFFECT_DURATION_REJECTED": "N10（19 个动作 units:\"turns\" 的效果永不创建；Ember 0.6.1 已迁走一大半，crucible 自己那 7 个没动）",
     "A-D2 EFFECT_DURATION_DROPPED":  "N3（sentinelKick 踉跄永不过期）",
     "A-ID1 EFFECT_ID_INVALID":       "C1（swallow 17 字符，S1 档）/ N1（abyssMarkUnmaking 15 字符，S2 档）",
     "A-K1 EFFECT_TOPLEVEL_KEY":      "N2（ember 运行期往效果顶层写 changes）",
