@@ -9,7 +9,8 @@
  * ① **动作钩子不来自数据字段。** `grep -c actionHooks crucible-compiled.mjs` = 0。
  *    钩子只有一个来源：`CrucibleAction.#prepareHooks(actionId)`（:19047）→
  *    `crucible.api.hooks.action[actionId]`，按 **action id** 索引。
- *    ember 在 `ember.mjs:126744` 用 `Object.assign(crucible.api.hooks[k], v)` 注册了 43 个动作钩子。
+ *    ember 在 `ember.mjs:142536` 用 `Object.assign(crucible.api.hooks[k], v)` 注册了 42 个动作钩子
+ *    （Ember 0.6.1；0.6.0 时 43 个，少掉的是 `oozeElectrifiedPseudopod`）。
  *    数据里那些 `"actionHooks": []` 是系统压根不读的死字段。
  * ② **`_tests()` 的合并语义是「同名覆盖，其余保留」。** 我们的包装 yield 出
  *    `Object.assign({}, own, extra)`：补丁提供哪个键就顶掉 ember 的哪个键，没提供的原样保留。
@@ -52,7 +53,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.8.0";
+const SCRIPT_VERSION = "0.8.1";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
@@ -387,7 +388,7 @@ HOOK_OVERRIDES.push({
 /* -------------------------------------------- */
 
 /**
- * **本模块目前影响面最大的一条**：38 个动作、九个血统的招牌变身，效果从来没落地过。
+ * **本模块目前影响面最大的一条**：19 个动作的效果从来没落地过。
  *
  * 链条：
  *  ① 数据里写的是 v12 时代的 `{turns: N}`（或 `{turns: N, rounds: null}`）。
@@ -404,22 +405,27 @@ HOOK_OVERRIDES.push({
  * 玩家看到的是：**聊天卡白纸黑字写着「获得 XXX · 持续 ∞」，角色身上一个图标都没有。**
  * 控制台有那句 warn，但没人会把它和「我的变身没生效」联系起来。
  *
- * 受影响面（本机 crucible + ember 全部 packs 深扫，按**不同动作 id** 去重）：**38 个**。
- * ⚠ 这个数早先写的是 19，是**漏数**：当时只统计了未迁移的 `{turns:N}` 旧形，
- * 漏掉了两类 ——（a）已经迁成 `units:"turns"` 的新形（`shieldBash`、`steamVent`），
- * （b）**冒险/预生成包里 actor 内嵌物品**上的副本，它们不是「重复」而是玩家真会用到的独立实例。
+ * 受影响面（本机 crucible 0.10.2 + ember 0.6.1 全部 packs 深扫，按**不同动作 id** 去重）：**19 个**。
  *
- *  - ember 侧 32 个。九个血统的招牌能力全在里面：阿尔提拉 Altyra 泰拉菲克变形、科拉克 Cor'ak 结晶化创伤、
- *    费伊杰 Fej 极限代谢、赫尔格伦 Hulg'run 活石、基瓦尔 Kivahr 规整节律、荆芽灵 Thornling 刺棘树皮、
- *    弗尔金哈尔 Vrjnhar 强健体力、威伦 Wirrun 无情猎手、泽夫 Zeph 的三种面容；
- *    敌手动作 abyssalWhispers / bewilderingGaze / frenziedClaws / searingStare / sentinelShielding 等；
- *    以及一批消耗品 alchemicalGrenade / frostFlask / electroAmpoule / cosmicGem×3。
- *  - **crucible 自己的内容 7 个**：devourThoughts、mindFlay、eldritchEmanation、
+ *  - **crucible 自己的内容 7 个**（现在是主体）：devourThoughts、mindFlay、eldritchEmanation、
  *    ferociousHowl、pestilentLash、shieldBash、steamVent。
- *    也就是说这不是「ember 数据配 crucible 校验」的接缝问题，crucible 单机也踩。
+ *    也就是说这不是「ember 数据配 crucible 校验」的接缝问题，**crucible 单机也踩**。
+ *  - ember 侧 13 个（含两侧共有的 steamVent），集中在敌手天赋与消耗品：
+ *    alchemicalGrenade / frostFlask / electroAmpoule / cosmicGem×3 / lightningBurst /
+ *    flamingSpray / restrainingBolt / deathThroes / drakonbanePoisonIngest / fingerWakingNightmares。
  *
- * 另有 22 个同样坏掉的效果写在**物品文档自己的 `effects[]`** 上，走不到 `preActivate`——
+ * ⚠ **这个数字被上游改过两次，两次方向相反，记一下免得再算错：**
+ *  - 0.6.0 时是 **38 个**（ember 32 + crucible 7，steamVent 两侧共有）。
+ *    更早还错写成 19 —— 那是漏数：只统计了未迁移的 `{turns:N}` 旧形，
+ *    漏掉已迁成 `units:"turns"` 的新形，以及冒险包里 actor 内嵌物品上的独立实例。
+ *  - **Ember 0.6.1 把动作侧迁走了一大半**（changelog：「Fixed an issue with "turns"-unit
+ *    durations, leading to them never applying」），38 → 19。
+ *    **九个血统的招牌变身现在全部正常** —— 早先文档里「九个血统全部中招」那句已作废。
+ *    crucible 侧那 7 个一条没动。
+ *
+ * 另有 **25 个**同样坏掉的效果写在**物品文档自己的 `effects[]`** 上，走不到 `preActivate`——
  * 那一半由 {@link PROTOTYPE_PATCHES} 里的 **N12** 补，两者共用 `patchTurnsDuration` 开关。
+ * （这一半 0.6.1 反而从 22 **涨到 25** —— 新加的怪物仍在用 turns 写。）
  *
  * 修法：把 `units` 从 `"turns"` 改成 `"rounds"`，数值不动，补上 `expiry`。
  *
@@ -2355,11 +2361,11 @@ Hooks.once("init", () => {
 
   // ── ① 影响最大 —— 效果根本没被创建 ──────────────────────────────────────────
   bool("patchTurnsDuration", "① N10 + N12 修正被系统拒绝创建的效果时长（影响面最大）",
-    "聊天卡写着「获得效果」，人身上却什么都没有，九个血统的招牌变身全中招；物品自带的常驻效果也一样。开启后都能挂上。时长是推定值，非上游权威。");
+    "聊天卡写着「获得效果」，人身上却什么都没有。19 个动作中招（crucible 自己占 7 个），物品自带的常驻效果另有 25 处。开启后都能挂上。");
   bool("patchEffectChanges", "① N2 修正「强化护盾」/「泰拉菲克变形」丢失的加值",
-    "「强化护盾」「泰拉菲克变形」的加值一点都不加。开启后生效，需同时开启 N10。（威吓 +2 恩惠骰仍无法实现。）");
+    "「强化护盾」「泰拉菲克变形」的加值一点都不加。开启后生效。Ember 0.6.0 上还需同时开 N10，0.6.1 起不必。");
   bool("patchEffectIdAlignment", "① E2 让「无情猎手」与「强健体力」真正触发",
-    "朝猎物攻击的 +2 恩惠骰不出现，「强健体力」的动作点退还从不触发。开启后正常，需同时开启 N10。");
+    "朝猎物攻击的 +2 恩惠骰不出现，「强健体力」的动作点退还从不触发。开启后正常。Ember 0.6.0 上还需同时开 N10，0.6.1 起不必。");
 
   // ── ② 动作放不出去 / 点了什么都不发生 ─────────────────────────────────────────
   bool("patchAbyssMark", "② N1 修正深渊「湮解印记」的非法效果 ID",
@@ -2403,7 +2409,7 @@ Hooks.once("init", () => {
   bool("patchRuneCantrips", "③ P3 补上符文所授的戏法与训练阶位",
     "选了符文却拿不到它的招牌戏法；召唤合集里的旧快照还会让本命符文法术按「未受训 −4」结算。开启后运行时补齐。");
   bool("patchLineageCantrips", "③ P3′ 给「顺带授予符文」的天赋也补上戏法（内容判断，非缺陷）",
-    "ember 四个血统给了符文却没给该符文的招牌戏法。但系统从没承诺「有符文就有戏法」，这些血统各自带着自己的招牌动作——补不补是内容取舍，不是修 bug。想严格照上游数据走就关掉它。上面那条 P3 修的是可证的缺陷（同一条目的两份数据自相矛盾），与本条无关。");
+    "ember 四个血统给了符文却没给该符文的戏法。但系统从没承诺两者绑定，它们各自带着招牌动作——补不补是内容取舍，不是修 bug，不认同就关掉。");
   bool("patchHasKnowledge", "③ I2 让手工添加的知识真正生效（上游 issue #1412）",
     "GM 手工加的知识不算数：用「评估力量」「洞悉弱点」时该拿到的 +2 恩惠骰不出现。开启后正常计入。");
   bool("patchThrowableOnly", "③ I7 投掷武器的下拉框只列扔得出去的武器（上游 issue #1288）",

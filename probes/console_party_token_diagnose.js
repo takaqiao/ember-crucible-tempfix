@@ -13,6 +13,25 @@
  *   L3 谁盖在它上面         —— elevation > -1 且覆盖 token 中心的 primary 精灵，逐个列出遮挡配置
  *   L4 泄漏的状态           —— renderable=false 且带 _oRenderable 的对象、未复原的 SFX 集合
  *   L5 位置与剔除           —— bounds 是不是被 vista 的视差算法算歪了
+ *
+ * ⚠⚠ **Ember 0.6.1 起，L4 是瞎的 —— 它的「没发现泄漏」不等于「没有泄漏」。**
+ *
+ * L4 靠读 ember 内部的几个符号来发现「改了 renderable 却没复原」的对象：
+ * `_deactivatedSFXObjects` / `_oRenderable` / `_deactivateSet` / `clearAndDelete` 等 9 个，
+ * 在 **0.6.0** 上都是可从外部读到的属性。
+ * **0.6.1 把这套搬进了 `EmberVista#applyEditorVisibility` 并改用私有 WeakMap**
+ * （`#sfxEffectValues` / `#spriteEffectValues`）—— 不是删了，是**外部再也读不到**。
+ *
+ * 后果：`withRenderableBackup` / `withPaddingBackup` / `sfxSetPresent` / `spriteSetPresent`
+ * 与 L3 的 `hasOwnRenderableBackup` 在 0.6.1 上**恒为空 / 恒为 false**，
+ * VERDICT 里的 H 档成了永不点亮的死分支，`restoreRenderable()` 也拿不回真原值。
+ *
+ * **带着这个瞎点跑，会把「探针没报泄漏」误读成「没有泄漏」** —— 正是本项目一再要防的
+ * 「路径空转当成缺陷消失」。要用 L4 请先把那几个符号在当前 ember.mjs 里重新定位。
+ *
+ * （附带：0.6.0 时那个泄漏本身**上游已经修好**了 —— 修在 `EmberVista._tearDown`：
+ *   全开开关后走一遍复原分支、从 WeakMap 回填；对照 0.6.0 的 `clearAndDelete` 只清 Set 不复原。
+ *   所以 L4 现在既读不到、大概率也没东西可读。L0/L1/L2/L3/L5 不受影响，照常可用。）
  */
 (() => {
   const out = { _t: new Date().toISOString(), scene: null, L0: {}, L1: {}, L2: {}, L3: [], L4: {}, L5: {} };
