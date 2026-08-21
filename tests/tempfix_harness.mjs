@@ -343,10 +343,18 @@ class CrucibleAction {
     }
   }
   // 真实顺序：initialize(:20302) → prepare(:20320) → canUse(:20429) → preActivate(:20504)
+  /**
+   * models/action.mjs:2359-2393。**桩件按 0.10.1 建模**（见文件头把 game.system.version
+   * 钉成 0.10.1）：那一版只重置 cost，`usage.bonuses` 一个都不碰 —— I4 的缺陷正在于此。
+   * （0.10.2 起上游在同一处补上了 bonuses 重置块，所以 I4 已被版本上限退休。）
+   *
+   * 顺序照真实的来：**先跑 initialize 钩子，再建 weaponChoices**。
+   */
   _configureUsage() {
     this.usage.hasDice = false;
-    // :20286 原文——注意它只重置 cost，bonuses 一个都不碰
     // Reset cost fields to their source values so that repeated prepare() calls do not accumulate costs
+    this._call("initialize");
+    this.usage.weaponChoices = this._prepareWeaponChoices();
   }
   /**
    * `_prepareWeaponChoices()`（:20134）的桩件。**每一条都以 `viable: true` 出厂** ——
@@ -370,8 +378,6 @@ class CrucibleAction {
    */
   prepare() {
     this._configureUsage();
-    this.usage.weaponChoices = this._prepareWeaponChoices();
-    this._call("initialize");
     this._call("prepare");
   }
   canUse() { this._call("canUse"); }
