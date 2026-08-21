@@ -154,6 +154,8 @@ const both = [...cru].filter(x => emb.has(x));
 console.log(`      crucible 侧出现 ${cru.size} 个，ember 侧出现 ${emb.size} 个，`
   + `其中两边都有 ${both.length} 个${both.length ? `（${both.join("、")}）` : ""}`);
 console.log(`      → 引用时务必写清口径：${cru.size} + ${emb.size} - ${both.length} = ${ids.size}`);
+console.log(`      crucible 侧：${[...cru].sort().join(", ")}`);
+console.log(`      ember 侧    ：${[...emb].sort().join(", ")}`);
 
 const transferable = turnsEffectDocs.filter(x => x.transfer);
 console.log(`\n📊 N12 影响面（ActiveEffect 文档 units:"turns"）`);
