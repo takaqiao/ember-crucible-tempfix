@@ -123,6 +123,9 @@ const MUTATIONS = [
   ["组号解析错位", "group: name.slice(0, 1)", "group: name.slice(1, 2)"],
   ["批量开关只改一半", "  for ( const s of SETTING_CATALOG ) {", "  for ( const s of SETTING_CATALOG.slice(2) ) {"],
 
+  // ── P4 的资源下拉框：它排在面板菜单之前，“面板塌了会带走它”那条路径靠这条守着
+  ["P4 不再注册 redirectResource", '  game.settings.register(MODULE_ID, "redirectResource", {', '  if ( false ) game.settings.register(MODULE_ID, "redirectResource", {'],
+
   // ── I7（上游 issue #1288）
   ["I7 不过滤（复现上游缺陷）", "      if ( c?.item && (c.item.system?.canThrow === false) ) c.viable = false;", "      "],
   ["I7 过滤方向反了", "(c.item.system?.canThrow === false)", "(c.item.system?.canThrow !== false)"],

@@ -54,6 +54,12 @@ globalThis.game = {
   system: { id: "crucible", version: "0.10.1" },
   i18n: { format: (k, d) => `${k}:${JSON.stringify(d)}` },
   settings: {
+    // ⚠ 真实 `ClientSettings` 有 `this.settings`（id → config 的 Map，register 往里写、
+    //   `#assertSetting` 从里读）。桩件以前没有这一项，于是
+    //   `game.settings.settings?.has?.(…) !== false` 求值成 `undefined !== false` —— **恒真**。
+    //   那条盯着 redirectResource 注册的断言因此是同义反复：把注册整段删掉它照样绿。
+    //   （与本文件里 `menus` 从数组改成 Map 是同一类坑，栽第二次了。）
+    settings: settingDefs,
     register(mod, key, cfg) { const k = `${mod}.${key}`; settingDefs.set(k, cfg); settings.set(k, cfg.default); },
     // registerMenu 只在拿得到 ApplicationV2 时才被调用；桩件里记下来供断言核对。
     // ⚠ 真实 Foundry 是 `this.menus.set(\`${namespace}.${key}\`, data)`（foundry.mjs:203510），
