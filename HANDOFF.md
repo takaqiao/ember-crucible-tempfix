@@ -46,7 +46,9 @@
 | **I7** 通用补丁 | 投掷武器的下拉框列出扔不出去的武器（上游 issue #1288） | `thrown` 标签漏了别的需求标签都做的 viable 过滤 |
 
 根因、行号级证据、以及同一份数据里的写法对照，全在 `docs/上游缺陷诊断.md`。
-**不要重新推导** —— 那份文档每条结论都带 `crucible-compiled.mjs` / `ember.mjs` 的行号。
+**不要重新推导** —— 那份文档每条结论都带行号。
+⚠ 但那些行号引的是**编译产物**（历史原因），上游一发版就漂。
+新做的取证请引 `systems/crucible/module/` 源码树，理由见 §3。
 
 ---
 
@@ -100,6 +102,32 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 
 > ⚠ 这只验证补丁逻辑，**不验证我对 Crucible 的建模对不对**。
 > 桩件复刻的是「读出来的语义」。真实世界验证没有替代品。
+
+### ⚠ 取证请读**源码树**，不要读编译产物
+
+crucible 安装目录下同时有两份代码：
+
+```
+systems/crucible/crucible-compiled.mjs     ← 运行时加载的（system.json 的 esmodules 指它），49241 行
+systems/crucible/module/                   ← **完整未压缩源码树**，159 个 .mjs，按关注点分目录
+    documents/active-effect.mjs   hooks/talent.mjs   hooks/spellcraft.mjs
+    models/action.mjs             dice/…             applications/…
+```
+
+两份**同源**（已用三处特征串交叉验证：`check = response;` / `featuredEquipment.length >= 3` /
+`this.system.training[runeId]` 在两边各命中一次）。
+
+**本仓早期的取证全部引的是编译产物的行号，那是走了弯路。** 后果是每次上游发版
+行号大面积漂移（0.10.1→0.10.2 就从 48308 行涨到 49241 行），而
+`module/documents/active-effect.mjs:152` 这种引用**基本不动**，而且一眼能看出在讲什么。
+
+**以后取证一律引源码树**。两个例外：
+1. `__guard` 的特征串仍要拿**编译产物**核对 —— 运行时 `String(fn)` 读到的是它，
+   打包过程可能改写空白或变量名。
+2. ember 没有源码树，只有 `scripts/ember.mjs`，那边只能读打包产物。
+
+（旧文档里的编译产物行号没有批量重标 —— 200+ 处，重标的出错概率高于价值。
+需要精确定位时用特征串搜索，或直接去源码树找同名文件。）
 
 ### 排障第一步：先确认在跑哪一版
 
