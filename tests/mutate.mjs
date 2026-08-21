@@ -43,8 +43,8 @@ const MUTATIONS = [
   // ── diagnose 漏报通用补丁（用户贴 diagnose 才发现：universal 一栏写死成一条）
   ["diagnose 的 universal 写死回一条", "      out.patches.universal = UNIVERSAL_PATCHES.map(body =>\n        UNIVERSAL_DEFS.find(d => d.body === body)?.label ?? \"(未命名)\");",
                    '      out.patches.universal = UNIVERSAL_PATCHES.length ? ["turnsDuration"] : [];'],
-  ["通用补丁漏写 label", '  { setting: "patchThrowableOnly", label: "thrownChoices", body: thrownChoicesPatch }',
-                   '  { setting: "patchThrowableOnly", body: thrownChoicesPatch }'],
+  ["通用补丁漏写 label", '{ setting: "patchTurnsDuration", label: "turnsDuration", body: turnsDurationPatch }',
+                   '{ setting: "patchTurnsDuration", body: turnsDurationPatch }'],
 
   // ── I6 的安装时机（用户贴 diagnose 才发现：首次进世界压根没生效）
   ["I6 不再就地补包已渲染的控件", "  try { wrapFlankingTool(globalThis.ui?.controls?.controls); } catch { /* 控件还没建，钩子会兜住 */ }", "  "],
@@ -126,10 +126,15 @@ const MUTATIONS = [
   // ── I7（上游 issue #1288）
   ["I7 不过滤（复现上游缺陷）", "      if ( c?.item && (c.item.system?.canThrow === false) ) c.viable = false;", "      "],
   ["I7 过滤方向反了", "(c.item.system?.canThrow === false)", "(c.item.system?.canThrow !== false)"],
-  ["I7 丢掉归属判据（所有动作都过滤）", '    if ( !this.tags?.has?.("thrown") ) return;                 // 归属判据', "    "],
+  ["I7 丢掉归属判据（所有动作都过滤）",
+    '    if ( !this.tags?.has?.("thrown") ) return choices;', "    "],
   ["I7 canThrow 缺失时也当不可扔", "(c.item.system?.canThrow === false)", "!c.item.system?.canThrow"],
-  ["I7 无视开关", '{ setting: "patchThrowableOnly", label: "thrownChoices", body: thrownChoicesPatch }',
-                  '{ setting: "patchTurnsDuration", label: "thrownChoices", body: thrownChoicesPatch }'],
+  ["I7 无视开关", "    if ( !settingOn(setting) || !Array.isArray(choices) ) return choices;",
+                  "    if ( !Array.isArray(choices) ) return choices;"],
+  // 把过滤挤到“太晚”的地方 —— 这正是 I7 曾经犯过的错：
+  // 挂在 strike 标签之后，下拉框过滤得了，“自动脱困”一次都不会发生。
+  ["I7 改挂在更晚的地方（重现历史错误）",
+    '  method: "_prepareWeaponChoices",', '  method: "getValidWeaponChoices",'],
 
   // ── N10
   ["N10 不改单位", '      d.units = "rounds";', '      /* mutated */'],

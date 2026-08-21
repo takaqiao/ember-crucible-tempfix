@@ -53,7 +53,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.8.1";
+const SCRIPT_VERSION = "0.8.2";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
@@ -1953,32 +1953,48 @@ for ( const { actionIds } of PATCH_DEFS ) {
  *
  * 本补丁按上游自己的形状把那个循环补上。
  *
- * 顺带把第二个症状一起解决了，理由能从代码上讲清楚：
- * `:4036` 是 `const locked = this.usage.weaponChoice ? choices.find(c => c.id === …)?.item : null;`
- * 而 `choices` 取自 `getValidWeaponChoices()`（`:20167`，只留 `viable`）。
- * 补上过滤之后，那个非法 id **在 choices 里找不到** ⇒ `locked` 为 null ⇒
- * 落到下面的 `choices.reduce(...)` 正常挑一把能扔的。也就是说：
- * 既进不去那个状态，已经进去了的下一次准备也会自动脱困。
+ * 第二个症状也一并解决：`strike.prepare`（`const/action.mjs:695-697`）里
+ * `const locked = this.usage.weaponChoice ? choices.find(c => c.id === …)?.item : null;`
+ * 的 `choices` 取自 `getValidWeaponChoices()`（`models/action.mjs:2242`，只留 `viable`）。
+ * 过滤到位之后那个非法 id **在 choices 里找不到** ⇒ `locked` 为 null ⇒
+ * 落到 `choices.reduce(...)` 正常挑一把能扔的 ⇒ 卡住的选择下一次准备自动脱困。
  *
- * ⚠ 诚实边界：上游说的「要重启会话才恢复」我**没有复现过**，
- * 上面只是说明本补丁为什么让 `locked` 不再卡住 —— 如果卡死另有来源（比如卡在别处的缓存），
- * 本补丁不保证解决那一半。
+ * ⚠ **这里曾经错过，改法记在这以免重蹈**：
+ * 本条最初做成**通用补丁**，理由写的是「通用补丁在 `_tests()` 里最后一格 yield，
+ * 必然排在 `thrown.prepare` 之后 —— 正是需要的时机」。
+ * 前半句对，结论错：**挑武器的不是 `thrown`，是 `strike`，而 `strike` 同样是标签**
+ * （`const/action.mjs:680` `priority: Infinity`）。而 `_tests()`（`models/action.mjs:2296-2298`）
+ * 是 `yield* this.tags.tags(); yield this.hooks;`，通用补丁再由本模块追加在**最后**。
+ * 于是顺序是：thrown.prepare → … → **strike.prepare（此时武器已选定）** → hooks → 通用补丁。
+ * 「最后」恰恰是太晚 —— 下拉框那一半是真的（渲染发生在 prepare 之后），
+ * 「自动脱困」那一半**一次都没成立过**：`usage.weaponChoice` 每趟都被重新认领，
+ * 而 `weaponChoices` 每趟由 `_configureUsage` 重建成全 `viable:true`。
  *
- * 为什么做成通用补丁而不是按 id：`thrown` 是**标签**，`throwWeapon`（`:4857`）不是唯一带它的动作
- * （装备包里的 `net` 也带）。按标签判、按上游语义走。
- * 通用补丁在 `_tests()` 里**最后**一格 yield，所以必然排在 `thrown.prepare` 之后 —— 正是需要的时机。
+ * 所以改挂在 `_prepareWeaponChoices()` 的**返回值**上：它在 `_configureUsage()`
+ * （`models/action.mjs:2392`）里被调用，早于**所有**标签的 prepare，
+ * 正是上游注释「Requirement tags further restrict viability」所指的那份出厂清单。
+ * 这样两个症状用同一处修复覆盖，且不依赖任何标签之间的先后。
+ *
+ * 为什么按标签判而不是按 id：`throwWeapon` 不是唯一带 `thrown` 的动作（装备包里的 `net` 也带）。
+ *
+ * 闸门走**数据形状**：上游哪天自己补上这个过滤，这里就是空转
+ * （幂等——已经是 `false` 的再设一次还是 `false`）。
  */
-const thrownChoicesPatch = {
-  prepare() {
-    if ( !this.tags?.has?.("thrown") ) return;                 // 归属判据
-    const choices = this.usage?.weaponChoices;
-    if ( !Array.isArray(choices) ) return;                     // 上游改了结构就别动
-    // 上游哪天自己补上了这个过滤，这里就是空转（幂等：已经 false 的再设一次还是 false）
+PROTOTYPE_PATCHES.push({
+  label: "CrucibleAction#_prepareWeaponChoices（I7 投掷武器下拉框）",
+  setting: "patchThrowableOnly",
+  resolve: () => globalThis.crucible?.api?.models?.CrucibleAction,
+  method: "_prepareWeaponChoices",
+  wrap: (orig, setting) => function _prepareWeaponChoices(...args) {
+    const choices = orig.apply(this, args);
+    if ( !settingOn(setting) || !Array.isArray(choices) ) return choices;   // 非武器动作返回 null
+    if ( !this.tags?.has?.("thrown") ) return choices;                      // 归属判据
     for ( const c of choices ) {
       if ( c?.item && (c.item.system?.canThrow === false) ) c.viable = false;
     }
+    return choices;
   }
-};
+});
 
 /**
  * `label` 不是装饰 —— `diagnose()` 靠它报「哪几条通用补丁在跑」。
@@ -1986,8 +2002,7 @@ const thrownChoicesPatch = {
  * 补丁在跑，自检却说只有一条。加补丁时必须同时给 label，有断言盯着。
  */
 const UNIVERSAL_DEFS = [
-  { setting: "patchTurnsDuration", label: "turnsDuration", body: turnsDurationPatch },
-  { setting: "patchThrowableOnly", label: "thrownChoices", body: thrownChoicesPatch }
+  { setting: "patchTurnsDuration", label: "turnsDuration", body: turnsDurationPatch }
 ];
 
 /**

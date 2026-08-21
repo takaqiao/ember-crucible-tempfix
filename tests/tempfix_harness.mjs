@@ -150,12 +150,23 @@ globalThis.SYSTEM = { WEAPON: { SLOTS }, ACTION: { TARGET_SCOPES },
  */
 let rejectedTags = 0;
 class TagSet extends Set {
-  constructor(v) { super((v ?? []).filter(t => t in TAGS)); this.sorted = [...this]; }
+  // 真实实现（models/action.mjs:422-487）构造时是**逐个 add**，不是 filter ——
+  // 所以构造路径同样会走 propagate、同样会计入拒绝数。
+  constructor(v) { super(); for ( const t of v ?? [] ) this.add(t); this.#sort(); }
   add(v) {
+    if ( this.has(v) ) return this;
     if (!(v in TAGS)) { rejectedTags++; return this; }
-    super.add(v); this.sorted = [...this]; return this;
+    super.add(v);
+    // **传播**：thrown → melee → strike，natural → melee → strike（const/action.mjs:904/805/931）。
+    // 漏掉它，带 thrown 的动作在桩件里就没有 strike 标签，而 strike 才是真正挑武器的那个 ——
+    // I7 的「自动脱困」假绿正是这么藏住的。
+    for ( const p of TAGS[v].propagate ?? [] ) this.add(p);
+    this.#sort();
+    return this;
   }
-  delete(v) { const r = super.delete(v); this.sorted = [...this]; return r; }
+  delete(v) { const r = super.delete(v); this.#sort(); return r; }
+  /** 逐字照抄上游的比较器：绝大多数标签没有 priority ⇒ NaN ⇒ V8 保持插入序 */
+  #sort() { this.sorted = Array.from(this).sort((a, b) => TAGS[a].priority - TAGS[b].priority); }
   *tags() { for (const t of this.sorted) yield TAGS[t]; }
 }
 
@@ -183,9 +194,33 @@ const TAGS = {
   piercing: { tag: "piercing", initialize() { this.usage.damageType ??= "piercing"; } },
   fire: { tag: "fire", initialize() { this.usage.damageType ??= "fire"; } },
   psychic: { tag: "psychic", initialize() { this.usage.damageType ??= "psychic"; } },
-  natural: { tag: "natural", prepare() { this.usage.damageType ??= "bludgeoning"; } },
+  natural: { tag: "natural", propagate: ["melee"], prepare() { this.usage.damageType ??= "bludgeoning"; } },
+  /**
+   * `strike`（const/action.mjs:680-707）—— **它才是挑武器的那个**，而且它是**标签**，
+   * 所以排在 `this.hooks` 与本模块 UNIVERSAL_PATCHES **之前**（models/action.mjs:2296-2298
+   * `yield* this.tags.tags(); yield this.hooks;`，通用补丁再由 tempfix 追加在最后）。
+   *
+   * ⚠ 此前桩件把这段逻辑提成一个真实世界**并不存在**的方法 `_resolveWeapon()`，
+   * 并放在 `_call("prepare")` 之后 —— 于是 I7 的通用补丁在桩件里排在挑武器**之前**，
+   * 在真实世界排在**之后**。两条「自动脱困」断言因此对着虚构一直是绿的。
+   */
+  strike: {
+    tag: "strike",
+    priority: Infinity,                   // 标签里的最后一个
+    initialize() { this.usage.strikes = []; },
+    prepare() {
+      if ( this.usage.weaponChoices ) {
+        const choices = this.getValidWeaponChoices();
+        const locked = this.usage.weaponChoice ? choices.find(c => c.id === this.usage.weaponChoice)?.item : null;
+        this.usage.weapon = locked ?? choices[0]?.item;
+      }
+      const strikes = this.usage.strikes ??= [];
+      if ( !strikes.length && this.usage.weapon ) strikes.push(this.usage.weapon);
+    }
+  },
   melee: {
     tag: "melee",
+    propagate: ["strike"], priority: 1,   // const/action.mjs:805-806
     // :4147-4154 —— 上游确立的写法：需求标签在 prepare 里把用不了的武器标成不可选
     prepare() {
       if ( this.tags.has("ranged") ) return;
@@ -201,6 +236,7 @@ const TAGS = {
    */
   thrown: {
     tag: "thrown",
+    propagate: ["melee"],                 // const/action.mjs:904
     prepare() {
       this.range.maximum ??= 10;
       this.range.weapon = false;
@@ -321,20 +357,16 @@ class CrucibleAction {
    * `strike.prepare`(:4034-4044) 里挑武器那一段。`locked` 只在 **valid** 集合里找 ——
    * 这正是「非法选项从列表里消失后，卡住的选择会自动脱困」的机制所在。
    */
-  _resolveWeapon() {
-    if ( !this.usage.weaponChoices ) return;
-    const choices = this.getValidWeaponChoices();
-    const locked = this.usage.weaponChoice ? choices.find(c => c.id === this.usage.weaponChoice)?.item : null;
-    this.usage.weapon = locked ?? choices[0]?.item;
-    this.usage.strikes = this.usage.weapon ? [this.usage.weapon] : [];
-  }
-  /** :19162 —— weaponChoices 在 _configureUsage(:20305) 里就绪，早于 prepare(:20314) */
+  /**
+   * models/action.mjs:1187-1192。挑武器**不在这里** —— 它在 `strike` 标签的 prepare 里，
+   * 因而发生在 `_call("prepare")` 的标签阶段，早于 hooks、更早于通用补丁。
+   * （从前这里多一句 `this._resolveWeapon()`，那是个上游并不存在的方法，见 TAGS.strike 的注释。）
+   */
   prepare() {
     this._configureUsage();
     this.usage.weaponChoices = this._prepareWeaponChoices();
     this._call("initialize");
     this._call("prepare");
-    this._resolveWeapon();
   }
   canUse() { this._call("canUse"); }
   preActivate() { this._call("preActivate"); }
@@ -1107,9 +1139,13 @@ console.log("\nI7：投掷武器的下拉框只列扔得出去的武器（上游
     return a;
   };
 
-  // 复现上游缺陷本身：不打补丁时徒手也在可选列表里
+  // 复现上游缺陷本身：不打补丁时徒手也在可选列表里。
+  // I7 现在包的就是 _prepareWeaponChoices 本身，所以要拿**原实现**来演示出厂形态。
   const bare = mk([wp("dagger", "匕首", true), wp("fist", "徒手", false)]);
-  bare.usage.weaponChoices = bare._prepareWeaponChoices();
+  const rawChoices = CrucibleAction.prototype._prepareWeaponChoices.__tempfixOriginal;
+  check("I7 补丁确实包在 _prepareWeaponChoices 上（而不是更晚的某处）",
+    rawChoices instanceof Function);
+  bare.usage.weaponChoices = rawChoices.call(bare);
   check("上游出厂时每一条都是 viable（缺陷本身）",
     bare.usage.weaponChoices.every(c => c.viable));
 
@@ -2137,9 +2173,29 @@ console.log("\n开关");
       u.length === defs.length, `报了 ${u.length} 条 / 实际 ${defs.length} 条：${u.join(",")}`);
     check("diagnose 报的名字都能对上 label",
       u.every(n => defs.some(d => d.label === n)), u.join(","));
+
+    /**
+     * ⚠ I7 从通用补丁改挂成原型补丁之后，`UNIVERSAL_DEFS` 只剩一条 ——
+     *   此时「写死成 `["turnsDuration"]`」与「按 defs 推导」输出**恰好相同**，
+     *   上面那两条断言就失去了约束力（变异测试当场报了假绿）。
+     *   所以临时注册第二条，把差异变得可观测：一条永远绿的断言等于没有断言。
+     */
+    const P = globalThis.emberCrucibleTempFix;
+    const fakeBody = { prepare() {} };
+    P.UNIVERSAL_DEFS.push({ setting: "__probe", label: "__probe", body: fakeBody });
+    P.UNIVERSAL_PATCHES.push(fakeBody);
+    try {
+      const u2 = P.diagnose().patches.universal;
+      check("diagnose 的 universal 是推导出来的，不是写死的",
+        (u2.length === 2) && u2.includes("__probe") && u2.includes("turnsDuration"), u2.join(","));
+    }
+    finally {
+      P.UNIVERSAL_DEFS.pop();
+      P.UNIVERSAL_PATCHES.pop();
+    }
   }
 
-  check("通用补丁默认全部在册（N10 + I7）",
+  check("通用补丁默认全部在册（现在只剩 N10，I7 已改挂原型补丁）",
     globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length === globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS.length,
     `${globalThis.emberCrucibleTempFix.UNIVERSAL_PATCHES.length} / ${globalThis.emberCrucibleTempFix.UNIVERSAL_DEFS.length}`);
   check("关掉 N10 → 时长不再被改写", (() => {
