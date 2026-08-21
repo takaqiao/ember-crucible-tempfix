@@ -137,9 +137,50 @@ for ( const m of tf.matchAll(/ACTION_PATCHES\.(\w+)\s*=\s*\{[\s\S]{0,500}?__guar
   if ( v ) weak.push({ label: `ACTION_PATCHES.${m[1]}`, setting: null, needle: v[1], via: m[2] });
 }
 
+/**
+ * 取出「某个对象字面量成员的某个方法」的源码。ember 的天赋钩子是这种形状：
+ *   emberAbyssAttune: { finalizeAction(item, action) { … } }
+ * `HOOK_OVERRIDES` 的 guard 读的正是 `String(hooks[type][id][hook])`，所以同样能收窄判定。
+ */
+function objectMemberSource(objKey, member) {
+  for ( const b of BUNDLES ) {
+    // 两种注册写法都要认：对象字面量 `id: {…}`，以及赋值 `HOOKS$1.id = {…}`
+    const decl = new RegExp(`\\b${esc(objKey)}\\s*[:=]\\s*\\{`).exec(b.src);
+    if ( !decl ) continue;
+    const open = b.src.indexOf("{", decl.index);
+    const close = balanced(b.src, open);
+    if ( close < 0 ) return { status: "对象体括号配不上" };
+    const body = b.src.slice(open, close);
+    const md = new RegExp(`(?:^|\\n|,)\\s*(?:async\\s+)?${esc(member)}\\s*[(:]`);
+    const mm = md.exec(body);
+    if ( !mm ) return { status: `${objKey} 里没有 ${member}` };
+    const bo = body.indexOf("{", body.indexOf("(", mm.index));
+    const bc = balanced(body, bo);
+    if ( bc < 0 ) return { status: "方法体括号配不上" };
+    return { status: "找到", body: body.slice(bo, bc), owner: objKey, bundle: b.name };
+  }
+  return { status: `包里找不到 ${objKey}` };
+}
+
+// 钩子覆盖：guard 比对的是钩子函数源码，能收窄到成员方法体内 → 与原型补丁同级可信
+const hookProbes = [];
+for ( const m of tf.matchAll(
+  /HOOK_OVERRIDES\.push\(\{\s*type:\s*"(\w+)",\s*id:\s*"(\w+)",\s*hook:\s*"(\w+)",\s*guard:\s*([A-Z_][A-Z0-9_]*|"[^"]*")[\s\S]{0,200}?setting:\s*"(\w+)"/g) ) {
+  let needle = m[4];
+  if ( needle.startsWith('"') ) needle = needle.slice(1, -1);
+  else {
+    const v = new RegExp(`const ${needle}\\s*=\\s*"([^"]*)"`).exec(tf);
+    if ( !v ) continue;
+    needle = v[1];
+  }
+  hookProbes.push({ label: `HOOK_OVERRIDES ${m[1]}.${m[2]}.${m[3]}`, setting: m[5],
+    objKey: m[2], member: m[3], needle });
+}
+
 // ── 判定 ────────────────────────────────────────────────────
 console.log(`跟版体检 —— crucible ${ver(`${CRU}/system.json`)} / ember ${ver(`${DATA}/modules/ember/module.json`)}`);
-console.log(`原型判据 ${strong.length} 条（方法体内判定） / 动作判据 ${weak.length} 条（全库判定，仅失配可信）\n`);
+console.log(`原型判据 ${strong.length} 条 + 钩子覆盖判据 ${hookProbes.length} 条（均为方法体内判定）`
+  + ` / 动作判据 ${weak.length} 条（全库判定，仅失配可信）\n`);
 
 const silent = [], retired = [], stillNeeded = [], undecidable = [], fine = [];
 
@@ -151,6 +192,16 @@ for ( const p of strong ) {
   if ( !hit && !hasCeiling ) silent.push({ ...p, r });
   else if ( !hit ) retired.push({ ...p, r });
   else if ( hasCeiling ) stillNeeded.push({ ...p, r });
+  else fine.push({ ...p, r });
+}
+for ( const p of hookProbes ) {
+  const r = objectMemberSource(p.objKey, p.member);
+  if ( r.status !== "找到" ) { undecidable.push({ ...p, why: r.status }); continue; }
+  const hit = r.body.includes(p.needle);
+  const hasCeiling = ceilings.has(p.setting);
+  if ( !hit && !hasCeiling ) silent.push({ ...p, r });
+  else if ( !hit ) retired.push({ ...p, r });
+  else if ( hasCeiling ) stillNeeded.push({ ...p, r, guardMethod: p.member });
   else fine.push({ ...p, r });
 }
 for ( const p of weak ) {

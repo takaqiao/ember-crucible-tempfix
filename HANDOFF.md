@@ -43,7 +43,7 @@
 | **N7** `darkflameCirclet` | 用一次崩在出卡之前，资源不扣、卡不出 | composed 标签只对法术合法 |
 | **N11** 12 个符文 Spellcraft 词缀 | 拿到符文却按「未受训 −4」算；控制台刷错误 | crucible 把 training 写到了文档而非数据模型 |
 | **N12** 原型补丁 | 物品**自带**的效果同样踩 N10，但创建不经过动作 —— `preActivate` 够不着 | 只能包 `CrucibleActiveEffect#_preCreate`；`preCreateActiveEffect` 钩子那条路是死的 |
-| **I7** 通用补丁 | 投掷武器的下拉框列出扔不出去的武器（上游 issue #1288） | `thrown` 标签漏了别的需求标签都做的 viable 过滤 |
+| **I7** 原型补丁 | 投掷武器的下拉框列出扔不出去的武器；选中后动作卡死（上游 issue #1288） | `thrown` 标签漏了别的需求标签都做的 viable 过滤。**0.8.2 从通用补丁改挂到 `_prepareWeaponChoices()`** —— 通用补丁 yield 在最后，而挑武器的 `strike` 是标签、早于它，所以“自动脱困”那一半以前从未生效 |
 
 根因、行号级证据、以及同一份数据里的写法对照，全在 `docs/上游缺陷诊断.md`。
 **不要重新推导** —— 那份文档每条结论都带行号。
@@ -316,7 +316,7 @@ console.table({ 上游: up.summary.byAssertion, 装了补丁: fx.summary.byAsser
 | `patchFlankingToggle` ⏸ | I6′ | **刚进世界、一次控件图层都没切过**就直接测上一行 | 同样生效（0.7.2 之前这里是坏的：安装晚于控件首次渲染）；`diagnose().patches.others.flankingToggle` 为「已包装」 |
 | `patchFeaturedEquipment` ⏸ | B5 | 打开多爪多牙怪物的卡，看侧栏当前装备 | 列出 3 件天生武器 |
 | `patchThrowableOnly` | **I7** | 装一把匕首（可投掷）+ 有天生武器的角色，打开「投掷武器」的武器下拉框 | 只列得出匕首；徒手/天生武器不再出现 |
-| `patchThrowableOnly` | I7′ | 先在**关掉**本项时选中一个扔不出去的武器并使用（复现卡死），再开回来 | 下一次准备自动落回能扔的那把，动作恢复可用 |
+| `patchThrowableOnly` | I7′ | 先在**关掉**本项时选中一个扔不出去的武器并使用（复现卡死），再开回来 | 下一次准备自动落回能扔的那把，动作恢复可用（⚠ **0.8.2 之前这一格从来没真正通过过** —— 补丁挂得太晚，桁件里又把顺序搓错了，所以断言一直是绿的。这是本表里**最值得亲自验的一格**） |
 
 **C 组 —— 需要第二个玩家端登录（不是 30 秒能做完的，单独排时间）**
 
