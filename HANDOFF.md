@@ -189,6 +189,54 @@ ember-crucible-tempfix | v0.8.1 已就绪 —— 补丁开关 32 项，控制面
 > **`diagnose()` 里有两条独立的轴**：「已包装」= 上游 guard 通过、补丁装上了；
 > 「开/关」= 当前是否生效。**包装体永不卸载**，所以关掉开关后仍显示「已包装」，这是正常的。
 
+
+> ⏸ = 该开关自 **crucible 0.10.2** 起被 `VERSION_CEILINGS` 永久停用。装 0.10.2 的机器**不必验**（还在 0.10.1 的用户才需要）。
+> 当前基线下真正要上牌桌验的是**剩下那些行**。
+
+#### 先跑扫描器 —— 这一步能自动消掉 11 个开关的**机制半边**
+
+```js
+// GM 身份进世界、canvas ready 后，把 probes/console_action_sweep.js 整段粘进控制台
+const up = await crucibleSweep({ includePacks: true, runPreActivate: true, upstreamMode: true  });
+const fx = await crucibleSweep({ includePacks: true, runPreActivate: true, upstreamMode: false });
+console.table({ 上游: up.summary.byAssertion, 装了补丁: fx.summary.byAssertion });
+```
+
+扫描器自带「判据 ↔ 补丁」对照表，下面这些开关它能直接给出证据，**不必先上牌桌**：
+
+| 开关 | 扫描器判据 |
+|---|---|
+| `patchTurnsDuration` | `A-D1`（N10）、`D-D3`（N12） |
+| `patchStaggerDuration` | `A-D2` |
+| `patchSwallowEffectId` / `patchAbyssMark` | `A-ID1`、`C-ID2` |
+| `patchEffectChanges` | `A-K1` |
+| `patchMissingRollProvider` | `A-R1`、`B-X1` |
+| `patchDawnBeaconScope` | `B-T1` |
+| `patchSuddenBite` | `B-T3` |
+| `patchWildStrike` | `B-W1` |
+| `patchEffectIdAlignment` | `C-E2`（启发式，二等证据） |
+| `patchResistanceChangeKey` | `D-E1` |
+
+**怎么读结果**（两个方向都要看，只看一个会被骗）：
+
+- **动作补丁**（`ACTION_PATCHES` 里的）：`upstreamMode:true` 时判据应当**命中**，
+  `false` 时应当**消失**。只在一种模式下跑，证明不了是补丁起的作用。
+- **通用/原型补丁**（N10 / N3 / N2 / C1 / N1 / N12）：它们不在 `ACTION_PATCHES` 里，
+  **两种模式下都挂着**，挂不起来。扫描器对此的处理是比对「源」与「活对象」：
+  源坏、活好 ⇒ 输出 **`MASKED`** 而不是「通过」。
+  **看到 `MASKED` 就是补丁生效的证据**；看到 `blocker`/`major` 才是补丁没起作用。
+
+> ⚠ **它只验机制，不验结果。** `MASKED` 证明的是「活对象上的 `units` 已被改成 `rounds`」，
+> **不**证明「效果图标真的出现在角色身上、并且 N 轮后消失」。
+> 表里那些写着玩家可见结果的行（N10 的图标、N2 的护甲 +3、E1 的抗性不是 NaN），
+> 机制过了之后**仍要上一次牌桌**确认结果 —— 只是这时候心里有底，出问题也知道该往哪查。
+
+跑完这一步，剩下要纯手工验的是：`patchOffhandStrike`、`patchLineageCantrips`、
+`patchRuneCantrips`、`patchBewilderingGaze`、`patchAntigravityStone`、`patchSparkScope`、
+`patchDarkflameCirclet`、`patchRestorativeRedirection`、`patchTumbleScope`、
+`patchDamageTypes`、`patchThrowableOnly` —— 11 个。
+
+
 **A 组 —— 选中角色 token 跑 `emberCrucibleTempFix.diagnose()` 就能看**
 
 | 设置键 | # | 怎么看 | 期望 |
@@ -199,7 +247,7 @@ ember-crucible-tempfix | v0.8.1 已就绪 —— 补丁开关 32 项，控制面
 | `patchLineageCantrips` | **P3′** | 泽夫角色的动作列表 | `diagnose().cantrips` 里出现 `energize`。⚠ 这条是**内容判断**：系统从没承诺「有符文就有戏法」，不认同就关掉它 |
 | `patchRuneCantrips` | P3″ | 已经自己学了 `Rune: Storm` 的角色 | **不应该**出现两个 energize |
 | `patchRuneCantrips` | **P3 / N9** | 召唤一只火精怪（走的是 `crucible.summons` 的旧快照） | 有 `enkindle`；`training.flame === 1`。这条才是可证的缺陷 |
-| `patchAffixTraining` | N11 | 装一件带符文 Spellcraft 词缀的物品 | `training` 里该符文为 1；控制台不再刷 prepareGrimoire 错误 |
+| `patchAffixTraining` ⏸ | N11 | 装一件带符文 Spellcraft 词缀的物品 | `training` 里该符文为 1；控制台不再刷 prepareGrimoire 错误 |
 | `patchBewilderingGaze` | N5 | 用惑乱凝视（`bewilderingGaze`） | `bewilderingGaze.defenseType === "willpower"` |
 | `patchAntigravityStone` | N6 | 用反重力石（`antigravityStone`） | 不需要选别人；`antigravityStone.type === "self"` |
 | `patchSparkScope` | N4 | 对倒下的队友用余烬之火花（`heartSparkOfEmber`） | 能选中、使用按钮可点 |
@@ -227,14 +275,14 @@ ember-crucible-tempfix | v0.8.1 已就绪 —— 补丁开关 32 项，控制面
 | `patchEffectIdAlignment` | E2-1 | 标记猎物（`implacableHunter`）后攻击它 —— **依赖 N10** | 出现 +2 恩惠骰 |
 | `patchEffectIdAlignment` | E2-2 | 触发强健体力（`formidableStamina`）—— **依赖 N10** | 动作点真的退还 |
 | `patchResistanceChangeKey` | E1 | 上稳定守护，看角色卡抗性 | 酸性抗性是数字，不是 `NaN` |
-| `patchRepeatedPrepare` | I4 | 带**强化**标签的位移动作（如飞踢），规划路径后再规划一次 | 伤害不比条目描述多 6 点 |
-| `patchSkillDialogSwap` | B4 | 多技能团队检定，在对话框里换成另一项技能 | 掷的是换后的那一项 |
-| `patchHasKnowledge` | I2 | GM 手工加一条知识，再用评估力量 | 拿到 +2 恩惠骰 |
-| `patchEnchantmentBonus` | B1/B2 | 给武器加词缀看攻击骰；给护甲加词缀看闪避 | 攻击骰里出现附魔加值；闪避防御涨 |
-| `patchCurrencyPopout` | B3 | 角色卡弹成独立窗口 | 货币不为 0 |
-| `patchFlankingToggle` | I6 | 开夹击叠层 → 换选别的 token → 关叠层 | 旧图形也消失，不用刷新 |
-| `patchFlankingToggle` | I6′ | **刚进世界、一次控件图层都没切过**就直接测上一行 | 同样生效（0.7.2 之前这里是坏的：安装晚于控件首次渲染）；`diagnose().patches.others.flankingToggle` 为「已包装」 |
-| `patchFeaturedEquipment` | B5 | 打开多爪多牙怪物的卡，看侧栏当前装备 | 列出 3 件天生武器 |
+| `patchRepeatedPrepare` ⏸ | I4 | 带**强化**标签的位移动作（如飞踢），规划路径后再规划一次 | 伤害不比条目描述多 6 点 |
+| `patchSkillDialogSwap` ⏸ | B4 | 多技能团队检定，在对话框里换成另一项技能 | 掷的是换后的那一项 |
+| `patchHasKnowledge` ⏸ | I2 | GM 手工加一条知识，再用评估力量 | 拿到 +2 恩惠骰 |
+| `patchEnchantmentBonus` ⏸ | B1/B2 | 给武器加词缀看攻击骰；给护甲加词缀看闪避 | 攻击骰里出现附魔加值；闪避防御涨 |
+| `patchCurrencyPopout` ⏸ | B3 | 角色卡弹成独立窗口 | 货币不为 0 |
+| `patchFlankingToggle` ⏸ | I6 | 开夹击叠层 → 换选别的 token → 关叠层 | 旧图形也消失，不用刷新 |
+| `patchFlankingToggle` ⏸ | I6′ | **刚进世界、一次控件图层都没切过**就直接测上一行 | 同样生效（0.7.2 之前这里是坏的：安装晚于控件首次渲染）；`diagnose().patches.others.flankingToggle` 为「已包装」 |
+| `patchFeaturedEquipment` ⏸ | B5 | 打开多爪多牙怪物的卡，看侧栏当前装备 | 列出 3 件天生武器 |
 | `patchThrowableOnly` | **I7** | 装一把匕首（可投掷）+ 有天生武器的角色，打开「投掷武器」的武器下拉框 | 只列得出匕首；徒手/天生武器不再出现 |
 | `patchThrowableOnly` | I7′ | 先在**关掉**本项时选中一个扔不出去的武器并使用（复现卡死），再开回来 | 下一次准备自动落回能扔的那把，动作恢复可用 |
 
@@ -242,8 +290,8 @@ ember-crucible-tempfix | v0.8.1 已就绪 —— 补丁开关 32 项，控制面
 
 | 设置键 | # | 怎么看 | 期望 |
 |---|---|---|---|
-| `patchPrivateBiography` | I3 | 用 limited/observer 权限的**玩家账号**打开 NPC 卡，切到生平页 | 看不到私人传记原文 |
-| `patchDefenseTypeLabel` | I5 | **玩家端**看一张攻击聊天卡的目标栏 | 有防御类型（如「反射」），**仍然不显示 DC 数字** |
+| `patchPrivateBiography` ⏸ | I3 | 用 limited/observer 权限的**玩家账号**打开 NPC 卡，切到生平页 | 看不到私人传记原文 |
+| `patchDefenseTypeLabel` ⏸ | I5 | **玩家端**看一张攻击聊天卡的目标栏 | 有防御类型（如「反射」），**仍然不显示 DC 数字** |
 
 **D 组 —— 通用**
 
