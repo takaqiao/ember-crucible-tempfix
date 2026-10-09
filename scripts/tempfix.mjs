@@ -53,7 +53,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.8.2";
+const SCRIPT_VERSION = "0.8.3";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
