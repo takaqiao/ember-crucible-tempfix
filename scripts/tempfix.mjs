@@ -53,7 +53,7 @@ const MODULE_ID = "ember-crucible-tempfix";
  *
  * ⚠ 发版时改 `module.json` 的 `version` 必须同步改这里。有断言盯着这一点。
  */
-const SCRIPT_VERSION = "0.8.3";
+const SCRIPT_VERSION = "0.8.4";
 
 const log = (...a) => console.log(`${MODULE_ID} |`, ...a);
 const warn = (...a) => console.warn(`${MODULE_ID} |`, ...a);
@@ -887,6 +887,9 @@ const SETTING_GROUPS = {
  * **对 10 条 `PROTOTYPE_PATCHES` 完全不生效** —— 而 B 系列（回搬自上游开发版、
  * 上游一发布就该退休的那五条）恰恰全是原型补丁。中央表让三类补丁走同一条判定。
  *
+ * 两条轴：`fixedIn` 比的是 crucible 系统版本，`fixedInEmber` 比的是 Ember 模块版本 ——
+ * 缺陷落在哪一侧就填哪一个（判定在 {@link supersededByUpstream}）。
+ *
  * B1–B5 全部来自 crucible `master` 已合并、但 0.10.1 未包含的修复，
  * 因此填 `0.10.2`（下一个发布版）。0.10.2 至今未发，所以现在全部空转。
  * @type {Record<string, {fixedIn?: string, fixedInEmber?: string}>}
@@ -917,9 +920,19 @@ const VERSION_CEILINGS = {
                                                   //   `cardData.targetLabel = cardData.defenseType;`
                                                   //   `if ( game.user.isGM ) cardData.targetLabel += \` ${cardData.dc}\`;`
                                                   //   —— 与本模块 0.7.4 的做法一致
-  patchFlankingToggle:   { fixedIn: "0.10.2" }    // I6  issue #1311
+  patchFlankingToggle:   { fixedIn: "0.10.2" },   // I6  issue #1311
                                                   //   onChange 改成 `CrucibleTokenObject.refreshFlankingVisualization()`，
                                                   //   逐 token 的循环整个没了（夹击机制在 #1424 里被重设计）
+
+  // ── Ember 轴：Ember 0.6.3 修好的一条，在 0.6.3 的 `scripts/ember.mjs` 里读过新实现。
+  //    0.6.2 及更早的用户仍然拿得到补丁。
+  patchEffectChanges:    { fixedInEmber: "0.6.3" }   // N2  两个钩子都改成写 `effect.system`、`type: "add"`：
+                                                     //   sentinelShielding（`:155419`）
+                                                     //   `this.effects[0].system.changes = [{key: "system.defenses.armor.bonus", …}]`
+                                                     //   tyraphicTransformation（`:155457`）同形，
+                                                     //   三处数值都与本模块的补丁相同。
+                                                     //   两条 `__guard` 特征串在新实现里**仍然命中**，
+                                                     //   没有这条上限，补丁会继续整体顶掉上游的 preActivate。
 
   // ⚠ **`patchDamageTypes` 故意不在这里。** 上游 changelog 写着
   //   「Changed the damage type of Noxious Spray from electricity to poison」，
@@ -2378,7 +2391,7 @@ Hooks.once("init", () => {
   bool("patchTurnsDuration", "① N10 + N12 修正被系统拒绝创建的效果时长（影响面最大）",
     "聊天卡写着「获得效果」，人身上却什么都没有。19 个动作中招（crucible 自己占 7 个），物品自带的常驻效果另有 25 处。开启后都能挂上。");
   bool("patchEffectChanges", "① N2 修正「强化护盾」/「泰拉菲克变形」丢失的加值",
-    "「强化护盾」「泰拉菲克变形」的加值一点都不加。开启后生效。Ember 0.6.0 上还需同时开 N10，0.6.1 起不必。");
+    "「强化护盾」「泰拉菲克变形」的加值一点都不加。开启后生效。Ember 0.6.0 上还需同时开 N10，0.6.1 起不必。Ember 0.6.3 起上游已修好，本项自动停用。");
   bool("patchEffectIdAlignment", "① E2 让「无情猎手」与「强健体力」真正触发",
     "朝猎物攻击的 +2 恩惠骰不出现，「强健体力」的动作点退还从不触发。开启后正常。Ember 0.6.0 上还需同时开 N10，0.6.1 起不必。");
 

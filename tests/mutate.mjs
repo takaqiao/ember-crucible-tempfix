@@ -55,13 +55,19 @@ const MUTATIONS = [
   ["I6 开启时也乱清一遍", "    if ( !active ) {\n      // 上游只清了 controlled", "    if ( true ) {\n      // 上游只清了 controlled"],
 
   // ── 0.10.2 退休名单（升级后重推全部补丁的结果）
-  ["漏掉一条 0.10.2 退休项（I6）", '  patchFlankingToggle:   { fixedIn: "0.10.2" }    // I6  issue #1311',
+  ["漏掉一条 0.10.2 退休项（I6）", '  patchFlankingToggle:   { fixedIn: "0.10.2" },   // I6  issue #1311',
    "  // I6 被漏掉了"],
   ["把 patchDamageTypes 也误退休了", '  patchRepeatedPrepare:  { fixedIn: "0.10.2" },   // I4  issue #1404',
    '  patchDamageTypes:      { fixedIn: "0.10.2" },\n  patchRepeatedPrepare:  { fixedIn: "0.10.2" },   // I4  issue #1404'],
   ["退休门槛写早了一版（0.10.1 用户被提前撤补丁）",
    '  patchHasKnowledge:     { fixedIn: "0.10.2" },   // I2  issue #1412',
    '  patchHasKnowledge:     { fixedIn: "0.10.1" },   // I2  issue #1412'],
+
+  // ── Ember 0.6.3 退休名单（N2；guard 特征串在上游新实现里仍命中，只有上限能让路）
+  ["漏掉 Ember 0.6.3 退休项（N2）", '  patchEffectChanges:    { fixedInEmber: "0.6.3" }', "  // N2 被漏掉了"],
+  ["N2 退休门槛写早了一版（Ember 0.6.2 用户被提前撤补丁）",
+   '{ fixedInEmber: "0.6.3" }', '{ fixedInEmber: "0.6.2" }'],
+  ["N2 的上限挂错了轴（按 crucible 版本退休）", '{ fixedInEmber: "0.6.3" }', '{ fixedIn: "0.6.3" }'],
 
   // ── P3 / P3′ 的拆分（审计发现 P3 混了「可证缺陷」与「内容判断」两件事）
   ["P3 判别反了（快照与血统互换）", "    const isStaleSnapshot = !(item.system.actions?.length);",

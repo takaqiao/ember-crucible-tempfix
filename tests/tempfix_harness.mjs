@@ -1835,11 +1835,63 @@ console.log("\n版本闸门（上游修好后自动停用，但 0.10.1 用户仍
   check("退休名单里没有 patchDamageTypes",
     !RETIRED_IN_0102.includes("patchDamageTypes"));
 
+  /**
+   * Ember 轴上的退休名单。Ember 0.6.3 把 N2 的两个钩子改成了写 `effect.system.changes`
+   * （`ember.mjs:155419` / `:155457`），但两条 `__guard` 特征串在新实现里**仍然命中** ——
+   * guard 轴不会让路，只有版本上限能把钩子交还上游。
+   * 门槛按 Ember 版本算、与 crucible 版本无关：这一段故意留在系统版本 0.10.2 下跑。
+   */
+  const RETIRED_IN_EMBER_063 = [
+    "patchEffectChanges"       // N2
+  ];
+  const N2_IDS = ["sentinelShielding", "tyraphicTransformation"];
+  const n2InTable = () => N2_IDS.filter(id => ACT()[id]);
+  const atEmber = v => {
+    if ( v ) globalThis.ember = { version: v };
+    else delete globalThis.ember;
+    setSetting("ember-crucible-tempfix.patchEffectChanges", true);   // 触发 applyToggles
+  };
+  // 0.6.3 的上游实现；源码里带着 N2 的 guard 特征串 "defenses.armor.bonus"
+  HOOKS_ACTION.sentinelShielding = Object.freeze({
+    preActivate() {
+      this.upstreamRan = true;
+      this.effects[0].system.changes = [{ key: "system.defenses.armor.bonus", value: 3, type: "add" }];
+    }
+  });
+  const shield = () => {
+    const a = new CrucibleAction({ id: "sentinelShielding", effects: [{ name: "守护", system: {} }] }, {});
+    a.preActivate();
+    return a;
+  };
+
+  atEmber("0.6.2");
+  check("Ember 0.6.2 上 N2 仍然生效（不能把老用户的补丁提前撤掉）",
+    settingOnProbe("patchEffectChanges") && n2InTable().length === 2, n2InTable().join(","));
+  check("Ember 0.6.2 上 guard 命中 → 上游的 preActivate 被补丁顶掉", !shield().upstreamRan);
+
+  atEmber("0.6.3");
+  check("Ember 0.6.3 上 N2 自动停用（一个开关管的两个动作一起让路）",
+    !settingOnProbe("patchEffectChanges") && n2InTable().length === 0, n2InTable().join(","));
+  const handedBack = shield();
+  check("Ember 0.6.3 上跑的是上游自己的 preActivate",
+    handedBack.upstreamRan === true && handedBack.effects[0].system.changes?.[0]?.value === 3);
+  check("Ember 0.6.3 上其余 ember 侧补丁不受影响",
+    settingOnProbe("patchAbyssMark") && settingOnProbe("patchStaggerDuration")
+      && !!ACT().abyssMarkUnmaking && !!ACT().sentinelKick);
+
+  atEmber("0.7.0");
+  check("更高的 Ember 版本同样停用", n2InTable().length === 0, n2InTable().join(","));
+
+  atEmber(null);
+  check("读不到 Ember 版本（没装 Ember）→ N2 保守地继续生效", n2InTable().length === 2, n2InTable().join(","));
+  delete HOOKS_ACTION.sentinelShielding;
+
   // 中央表与退休名单必须一致 —— 两处各写一遍，谁漏了都会红
   const ceilKeys = Object.keys(ceilings).sort();
+  const retired = [...RETIRED_IN_0102, ...RETIRED_IN_EMBER_063].sort();
   check("中央表的键集与退休名单完全一致",
-    JSON.stringify(ceilKeys) === JSON.stringify([...RETIRED_IN_0102].sort()),
-    `表:${ceilKeys.join(",")} / 名单:${[...RETIRED_IN_0102].sort().join(",")}`);
+    JSON.stringify(ceilKeys) === JSON.stringify(retired),
+    `表:${ceilKeys.join(",")} / 名单:${retired.join(",")}`);
 
   game.system.version = realVer;
   check("恢复真实系统版本后 B1 又生效", rollB1() === 3, String(rollB1()));

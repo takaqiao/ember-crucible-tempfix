@@ -35,7 +35,7 @@
 | **P4** `mayisRestorativeRedirection` | 「疗愈导流」恢复的资源种类恒为生命值 | ember 读了不存在的字段 |
 | **N1** `abyssMarkUnmaking` | 「湮解印记」点了什么都不发生，连聊天卡都不生成 | 效果 id 只有 15 字符 |
 | **N10** 通用补丁 | **卡上写着「获得效果·∞」，人身上什么都没有**；19 个动作，crucible 自己就占 7 个 | 数据写 `{turns:N}`，而 `_preCreate` 拒绝 turns 单位 |
-| **N2** `sentinelShielding` / `tyraphicTransformation` | 加值一条不生效（**需与 N10 同开**，否则效果压根不会被创建） | `changes` 写在了 effect 顶层 |
+| **N2** `sentinelShielding` / `tyraphicTransformation` | 加值一条不生效（**需与 N10 同开**，否则效果压根不会被创建） | `changes` 写在了 effect 顶层。**Ember 0.6.3 上游已修**，按 `fixedInEmber` 自动停用 |
 | **N3** `sentinelKick` | 「斥退踢击」的踉跄**永不消失**，每回合 −2 动作点 | duration 有 value 没 units |
 | **N4** `heartSparkOfEmber` | 「余烬之火花」复活友方的分支永远选不中目标 | scope 写成了 ENEMIES |
 | **N5** `bewilderingGaze` | 精神攻击按护甲结算，会被「用盾牌挡下」 | 缺 willpower 标签 |
@@ -63,8 +63,8 @@ C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\      ← 源码唯一真源
 ├── docs\补丁详解.md            ← 每条补丁的根因与做法（原先在 README 里，0.7.0 拆出来）
 ├── docs\上游缺陷诊断.md        ← 完整取证；§0 共用前提、§4 与 §7 撤回记录、§6 已排除清单
 ├── tests\
-│   ├── tempfix_harness.mjs    ← 离线断言 327 条（不需要 Foundry）
-│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（56/56）
+│   ├── tempfix_harness.mjs    ← 离线断言 336 条（不需要 Foundry）
+│   └── mutate.mjs             ← 变异测试：把补丁改回坏写法，期望 harness 变红（61/61）
 └── probes\                    ← 取证脚本（node 五个 + 浏览器控制台两个）
     ├── dump_all.mjs / dump_pack.mjs / dump_actions.mjs / index_actions.mjs / find_field.mjs
     │                           ← LevelDB 合集离线导出与检索（node；需要仓库根的 classic-level）
@@ -87,8 +87,8 @@ Foundry 那边 `%LOCALAPPDATA%\FoundryVTT\Data\modules\ember-crucible-tempfix`
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mjs"
 ```
 
-**327 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
-关掉开关后行为回到上游原样）。当前：**327 passed / 0 failed**。
+**336 条断言**，含大量反向断言（上游修好了就别动、只按 id 命中、ember 的钩子不能被顶掉、
+关掉开关后行为回到上游原样）。当前：**336 passed / 0 failed**。
 
 断言本身也验过 —— 变异测试把补丁逐个改回坏写法，期望 harness **变红**：
 
@@ -96,7 +96,7 @@ node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\tempfix_harness.mj
 node "C:\Users\Taka\Desktop\fvtt\ember-crucible-tempfix\tests\mutate.mjs"
 ```
 
-当前 **56 处变异，56/56 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
+当前 **61 处变异，61/61 全部被抓住**（脚本自己备份、finally 里还原，最后复跑一次确认绿）。
 加补丁时**同时加一条变异**：一条永远绿的断言和没有断言是一回事 ——
 这个脚本抓出过多条假绿，最近一条是「`settingOn` 读不到设置时保守生效」从来没被断言过。
 
@@ -223,6 +223,7 @@ ember-crucible-tempfix | v0.8.1 已就绪 —— 补丁开关 32 项，控制面
 
 
 > ⏸ = 该开关自 **crucible 0.10.2** 起被 `VERSION_CEILINGS` 永久停用。装 0.10.2 的机器**不必验**（还在 0.10.1 的用户才需要）。
+> ⏸E = 同一张表、按 **Ember** 版本停用：`patchEffectChanges`（N2）自 Ember 0.6.3 起停用，装 0.6.3 及以上的机器不必验。
 > 当前基线下真正要上牌桌验的是**剩下那些行**。
 
 #### 先跑扫描器 —— 这一步能自动消掉 11 个开关的**机制半边**
@@ -290,7 +291,7 @@ console.table({ 上游: up.summary.byAssertion, 装了补丁: fx.summary.byAsser
 |---|---|---|---|
 | `patchTurnsDuration` | **N10** | ⚠ **Ember 0.6.1 起别再用血统变身验** —— 上游已把那九个迁好，照着验会看到本来就正常的行为。改用仍中招的：`shieldBash` 盾牌猛击（crucible 单机即可复现）或 `steamVent` 熔毁 | **身上真的出现效果图标**且 N 轮后消失；`patches.universal` 含 turnsDuration<br>缺陷曾由用户在 **Ember 0.6.0** 上实测确认（「强健体力」用了没效果，1 专注 + 1 点英雄气概白扣）；该动作在 0.6.1 已被上游修好 |
 | `patchTurnsDuration` | **N12**（同一开关） | 把 `crucible-adventure` 的神话尖塔守护者 Mythspire Guardian 拖上桌 —— 它的「濒临死亡 Nearing Death」是 `transfer:true` | 该 token 身上直接带着「消损之毒 Wasting Poison」效果；控制台**不再**出现 `does not support effect durations of unit "turns"` |
-| `patchEffectChanges` | N2 | 用强化护盾（`sentinelShielding`）。Ember 0.6.0 上要**先确认 N10 那格过了**；0.6.1 起该效果自己就能创建 | 图标出现后，护甲防御 +3 真的涨了 |
+| `patchEffectChanges` ⏸E | N2 | 用强化护盾（`sentinelShielding`）。Ember 0.6.0 上要**先确认 N10 那格过了**；0.6.1 起该效果自己就能创建 | 图标出现后，护甲防御 +3 真的涨了 |
 | `patchAbyssMark` | N1 | 暴击后用湮解印记（`abyssMarkUnmaking`） | 正常出卡、扣资源；`patches.hookOverrides` 显示已覆盖 |
 | `patchStaggerDuration` | N3 | 被斥退踢击（`sentinelKick`）命中 | 踉跄 1 轮后消失，不是 ∞ |
 | `patchDarkflameCirclet` | N7 | 佩戴并投注暗焰头环后用暗焰光束 | 正常出卡（控制台仍可能有一条 initialize 的 error，那是补不掉的化妆问题） |
@@ -349,6 +350,8 @@ console.table({ 上游: up.summary.byAssertion, 装了补丁: fx.summary.byAsser
    而恩惠骰读取点（`:36852`）是全局的、**无法按技能限定**。要做只能在 `prepareSkillCheck` 分支里按
    `skill.id === "intimidation"` 加 —— crucible 自己在 `:11353`（berserkerRage）是这个套路，
    但实现前必须现场核对 `:36852-36875` 的签名。目前 README 里记了「仍未生效」。
+   **Ember 0.6.3 起不必再做**：上游把这一条从 changes 里拿掉，改在 `emberAltyraLinea` 的
+   `prepareAction` / `prepareSkillCheck` 里按技能判（`ember.mjs:154540`），正是上面说的那个套路。
 3. **T2 的已知代价**：P3/N9 注入的动作**不传 parent**（传了会让配置卡一改就报错）。
    代价是 `CrucibleAction#clone`（`:19135`）不转发 item，执行时那份 clone 的 `this.item` 为 undefined，
    聊天卡少写一个 item uuid（`:21193`）。两处都 null-safe。
@@ -379,6 +382,7 @@ console.table({ 上游: up.summary.byAssertion, 装了补丁: fx.summary.byAsser
 - **版本上限走中央表 `VERSION_CEILINGS`（设置键 → 上游哪版修好）**，不要再往补丁对象上挂
   `fixedIn`。历史教训：闸门原先只作用于 `PATCH_DEFS` / `UNIVERSAL_DEFS`，
   而 B 系列（上游一发布就该退休的五条回搬）**全是 `PROTOTYPE_PATCHES`** —— 写了也是死字。
+  表里两条轴：crucible 侧的缺陷填 `fixedIn`（比系统版本），ember 侧的填 `fixedInEmber`（比 Ember 版本）。
 - **原型补丁一律经 `settingOn()` 读开关**（它同时查中央表），不要直接 `game.settings.get`。
   `settingOn` 的失败方向是**保守生效**，这有断言盯着。
 - 加补丁的同时**在 `tests/mutate.mjs` 里加一条变异**。一条永远绿的断言和没有断言是一回事。

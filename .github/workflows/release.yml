@@ -31,7 +31,7 @@ jobs:
       - name: Check script syntax
         run: node --check scripts/tempfix.mjs
 
-      # 离线桩件：用最小 Foundry / Crucible 桩件跑完 init → setup → ready（当前 329 条断言）
+      # 离线桩件：用最小 Foundry / Crucible 桩件跑完 init → setup → ready（当前 336 条断言）
       - name: Offline harness
         run: node tests/tempfix_harness.mjs
 
